@@ -1,0 +1,20 @@
+{
+  "name": "smart-sleep-lighting-onprem",
+  "version": "1.0.0",
+  "description": "On-premise smart sleep lighting edge node (Raspberry Pi + MQTT + GPIO)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "MOCK_GPIO=true node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "mqtt": "^5.15.1",
+    "onoff": "^6.0.3",
+    "pigpio": "^3.3.1"
+  }
+}
