@@ -17,6 +17,7 @@ const routineController = require('./routineController');
 const sensor = require('./sensor');
 const sensorWatcher = require('./sensorWatcher');
 const eventLogger = require('./eventLogger');
+const webServer = require('./webServer');
 const buildLogger = require('./logger');
 
 const log = buildLogger('app');
@@ -39,6 +40,9 @@ function publishSensorReading() {
     mqttClient.publish(config.topics.lux, payload, { qos: 0, retain: false });
     log.info(`조도값 발행 → ${lux} lux  [${config.topics.lux}]`);
 
+    // 웹 대시보드 SSE 클라이언트에도 실시간 푸시
+    webServer.broadcastLux(payload);
+
     // 어두워짐/밝아짐 전이 감시 (추천 메시지 자동 발행)
     sensorWatcher.observe(lux);
   } catch (err) {
@@ -59,6 +63,14 @@ function bootstrap() {
   eventLogger.append({ type: 'service_start', clientId: config.mqtt.clientId });
 
   lightController.init();
+
+  // Express 대시보드 서버 시작 (MQTT 연결과 병렬로 가동).
+  // publishMqtt 주입 → 같은 프로세스 내 MQTT 클라이언트를 공유.
+  webServer.start({
+    publishMqtt: (topic, message) =>
+      mqttClient.publish(topic, message, { qos: 1, retain: false }),
+  });
+
   const client = mqttClient.connect();
 
   client.once('connect', () => {

@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Smart Sleep Lighting · Edge Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #1a1d24;
+      --border: #2a2d34;
+      --text: #e6e6e6;
+      --muted: #8a8d96;
+      --accent: #7ab4ff;
+      --ok: #4ade80;
+      --err: #f87171;
+      --sleep: #5b3a9e;
+      --wakeup: #3a7ba9;
+      --off: #a9463a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans KR', sans-serif;
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 20px 16px 48px;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-text-size-adjust: 100%;
+    }
+    h1 { font-size: 20px; margin: 0 0 16px; font-weight: 600; }
+    .card {
+      background: var(--panel);
+      border-radius: 14px;
+      padding: 18px;
+      margin-bottom: 14px;
+    }
+    .label { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    .lux { font-size: 56px; font-weight: 300; letter-spacing: -1px; line-height: 1; }
+    .lux-unit { font-size: 15px; color: var(--muted); margin-left: 6px; }
+    .btn {
+      display: inline-block;
+      padding: 14px 18px;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      margin: 0 8px 8px 0;
+      color: white;
+      transition: filter 120ms, transform 80ms;
+      min-width: 140px;
+    }
+    .btn:hover { filter: brightness(1.1); }
+    .btn:active { transform: scale(0.97); }
+    .btn-sleep { background: var(--sleep); }
+    .btn-wakeup { background: var(--wakeup); }
+    .btn-off { background: var(--off); }
+    .status { font-size: 12px; color: var(--muted); margin-top: 8px; min-height: 1em; }
+    .status.ok { color: var(--ok); }
+    .status.err { color: var(--err); }
+    .logs-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .logs {
+      max-height: 420px;
+      overflow-y: auto;
+      font-family: 'SF Mono', Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .log-row {
+      padding: 4px 0;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .log-ts { color: #6a6d75; }
+    .log-type {
+      color: var(--accent);
+      margin: 0 8px;
+      display: inline-block;
+      min-width: 16ch;
+    }
+    .log-extra { color: var(--muted); }
+    .btn-row { display: flex; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <h1>🌙 Smart Sleep Lighting · Edge Dashboard</h1>
+
+  <div class="card">
+    <div class="label">현재 가상 조도 센서값</div>
+    <div>
+      <span class="lux" id="lux">--</span><span class="lux-unit">lux</span>
+    </div>
+    <div class="status" id="streamStatus">스트림 연결 중…</div>
+  </div>
+
+  <div class="card">
+    <div class="label">루틴 / 조명 제어</div>
+    <div class="btn-row">
+      <button class="btn btn-sleep" onclick="trigger('sleep')">🌙 취침 루틴 시작</button>
+      <button class="btn btn-wakeup" onclick="trigger('wakeup')">☀️ 기상 루틴 시작</button>
+      <button class="btn btn-off" onclick="forceOff()">⛔ 조명 강제 OFF</button>
+    </div>
+    <div class="status" id="actionStatus"></div>
+  </div>
+
+  <div class="card">
+    <div class="logs-head">
+      <strong>최근 실행 로그</strong>
+      <span class="status" id="logsStatus">–</span>
+    </div>
+    <div class="logs" id="logs"></div>
+  </div>
+
+  <script>
+    // ───── 실시간 조도값 (SSE)
+    const luxEl = document.getElementById('lux');
+    const streamStatus = document.getElementById('streamStatus');
+    const evt = new EventSource('/api/stream');
+
+    evt.addEventListener('lux', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        luxEl.textContent = Number(data.value).toFixed(1);
+        streamStatus.textContent =
+          '마지막 수신: ' + new Date(data.timestamp).toLocaleTimeString('ko-KR');
+        streamStatus.className = 'status ok';
+      } catch (_) {}
+    });
+    evt.onerror = () => {
+      streamStatus.textContent = '스트림 연결 끊김 (자동 재연결)';
+      streamStatus.className = 'status err';
+    };
+
+    // ───── 버튼 액션
+    function setAction(text, ok) {
+      const el = document.getElementById('actionStatus');
+      el.textContent = text;
+      el.className = 'status ' + (ok === true ? 'ok' : ok === false ? 'err' : '');
+    }
+
+    async function trigger(routine) {
+      setAction(`${routine} 루틴 요청 중…`, null);
+      try {
+        const res = await fetch(`/api/routine/${routine}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}), // 기본값으로 루틴 실행
+        });
+        setAction(
+          res.ok ? `${routine} 루틴 트리거 전송 완료` : `요청 실패 (HTTP ${res.status})`,
+          res.ok,
+        );
+        refreshLogs();
+      } catch (err) {
+        setAction('요청 실패: ' + err.message, false);
+      }
+    }
+
+    async function forceOff() {
+      setAction('조명 강제 OFF 요청 중…', null);
+      try {
+        const res = await fetch('/api/light/off', { method: 'POST' });
+        setAction(
+          res.ok ? '조명 강제 OFF 전송 완료 (루틴 취소 + OFF)' : `요청 실패 (HTTP ${res.status})`,
+          res.ok,
+        );
+        refreshLogs();
+      } catch (err) {
+        setAction('요청 실패: ' + err.message, false);
+      }
+    }
+
+    // ───── 로그 리스트 (3초마다 폴링)
+    const logsEl = document.getElementById('logs');
+    const logsStatus = document.getElementById('logsStatus');
+
+    function describe(e) {
+      switch (e.type) {
+        case 'routine_start':
+          return `${e.name} ${fmtRgb(e.from)} → ${fmtRgb(e.to)} (${e.durationMs}ms, ${e.steps}단계)`;
+        case 'routine_end':
+          return `${e.name} 완료`;
+        case 'routine_cancelled':
+          return `${e.name} 취소 (${e.reason || '-'})`;
+        case 'routine_step':
+          return `${e.name} step ${e.step}/${e.total} ${fmtRgb(e.rgb)}`;
+        case 'routine_suggestion':
+          return `${e.suggest} · lux=${e.currentLux} (${e.previousState}→${e.newState})`;
+        case 'light_control_received':
+          return `"${e.payload}"`;
+        case 'service_start':
+        case 'service_stop':
+          return e.signal ? `(${e.signal})` : '';
+        default:
+          return '';
+      }
+    }
+    function fmtRgb(arr) {
+      return Array.isArray(arr) ? `(${arr.join(',')})` : '';
+    }
+
+    async function refreshLogs() {
+      try {
+        const res = await fetch('/api/logs?limit=80');
+        const { events, count } = await res.json();
+        logsEl.innerHTML = events
+          .reverse()
+          .map((e) => {
+            const ts = new Date(e.timestamp).toLocaleTimeString('ko-KR');
+            return `<div class="log-row">
+              <span class="log-ts">${ts}</span>
+              <span class="log-type">${e.type}</span>
+              <span class="log-extra">${describe(e)}</span>
+            </div>`;
+          })
+          .join('');
+        logsStatus.textContent = `${count}건 표시`;
+        logsStatus.className = 'status ok';
+      } catch (err) {
+        logsStatus.textContent = '로드 실패';
+        logsStatus.className = 'status err';
+      }
+    }
+
+    refreshLogs();
+    setInterval(refreshLogs, 3000);
+  </script>
+</body>
+</html>

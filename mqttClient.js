@@ -19,10 +19,16 @@ let client = null;
  *  - mqtt.js 는 기본적으로 자동 재연결을 지원합니다(reconnectPeriod).
  */
 function connect() {
-  log.info(`브로커 연결 시도: ${config.mqtt.brokerUrl} (clientId=${config.mqtt.clientId})`);
+  const authInfo = config.mqtt.username ? ` as "${config.mqtt.username}"` : ' (anonymous)';
+  log.info(
+    `브로커 연결 시도: ${config.mqtt.brokerUrl}${authInfo} (clientId=${config.mqtt.clientId})`,
+  );
 
   client = mqtt.connect(config.mqtt.brokerUrl, {
     clientId: config.mqtt.clientId,
+    // Mosquitto 인증(allow_anonymous=false) 활성화 시 필요.
+    username: config.mqtt.username,
+    password: config.mqtt.password,
     clean: true, // 세션을 매번 새로 시작
     reconnectPeriod: 2000, // 2초 간격 재연결
     connectTimeout: 10_000, // 10초 타임아웃

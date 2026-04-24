@@ -21,6 +21,15 @@ const config = {
     clientId:
       process.env.MQTT_CLIENT_ID ||
       `rpi-edge-${Math.random().toString(16).slice(2, 8)}`,
+    // Mosquitto 브로커 allow_anonymous=false 운영 시 필수.
+    // undefined 로 두면 인증 없이 접속 시도 (익명 허용 브로커용).
+    username: process.env.MQTT_USERNAME || undefined,
+    password: process.env.MQTT_PASSWORD || undefined,
+  },
+
+  web: {
+    // Express 대시보드 HTTP 포트 (0.0.0.0 바인딩)
+    port: Number(process.env.WEB_PORT) || 3000,
   },
 
   topics: {

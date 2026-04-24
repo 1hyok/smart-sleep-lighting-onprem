@@ -13,6 +13,7 @@
   "type": "commonjs",
   "dependencies": {
     "dotenv": "^17.4.2",
+    "express": "^5.2.1",
     "mqtt": "^5.15.1",
     "onoff": "^6.0.3",
     "pigpio": "^3.3.1"
