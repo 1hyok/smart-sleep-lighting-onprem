@@ -68,6 +68,11 @@ function arm(name, hhmm, runFn) {
  * 모든 스케줄 활성화. index.js 의 bootstrap() 에서 1회 호출.
  */
 function start() {
+  // 멱등성 가드 — 두 번 호출돼도 인터벌 누수 방지.
+  if (intervals.length) {
+    log.warn('scheduler.start() 중복 호출 — 기존 인터벌 먼저 해제');
+    stop();
+  }
   arm('sleep', process.env.SCHEDULE_SLEEP, () => routineController.startSleep());
   arm('wakeup', process.env.SCHEDULE_WAKEUP, () => routineController.startWakeup());
 }
