@@ -22,7 +22,7 @@ const log = buildLogger('sensor');
 const PCF8591_CONTROL_BASE = 0x40;
 
 let i2cBus = null;
-let useMock = config.gpio.mock;
+let useMock = config.sensor.mock;
 
 if (!useMock) {
   try {
@@ -101,7 +101,7 @@ function smoothLux(lux) {
 /**
  * PCF8591 raw ADC (0..255) → lux 추정값 (0..1000).
  *  - 정밀 캘리브레이션은 하지 않은 선형 매핑.
- *  - sensorWatcher 의 dark/bright 임계값 (기본 100 / 400) 과 같은 스케일.
+ *  - 단위는 진짜 lux 가 아니라 "lux_estimate" — 페이로드 스키마에 명시.
  */
 function adcToLux(raw) {
   const oriented = config.sensor.invert ? 255 - raw : raw;
