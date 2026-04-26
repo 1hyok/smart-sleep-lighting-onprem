@@ -43,29 +43,31 @@ function arm(name, hhmm, runFn) {
     log.warn(`스케줄 미설정 또는 형식 오류: ${name} (값="${hhmm}")`);
     return;
   }
-  const delay = nextFireDelayMs(target);
-  log.info(
-    `${name} 다음 실행 예약: ${hhmm} (${Math.round(delay / 60000)}분 후)`,
-  );
-  setTimeout(() => {
-    log.info(`⏰ 스케줄 발동: ${name}`);
-    eventLogger.append({
-      type: 'schedule_fired',
-      name,
-      scheduledAt: hhmm,
-    });
-    try {
-      runFn();
-    } catch (err) {
-      log.error(`스케줄 실행 실패 (${name}): ${err.message}`);
-      eventLogger.append({
-        type: 'schedule_error',
-        name,
-        message: err.message,
-      });
+  log.info(`${name} 스케줄 폴링 시작 (대상 ${hhmm}, 60s 간격)`);
+
+  // RPi 는 RTC 가 없어 NTP 보정/슬립 후 시스템 시간이 점프하는데, setTimeout
+  // 의 단조 시계는 그 점프를 따라가지 않아 발동이 어긋남. 1분 폴링 + ymd
+  // 게이트로 동일 분 내 중복 발동을 차단하면서 시계 변경에 둔감해짐.
+  let lastFiredYmd = null;
+  setInterval(() => {
+    const now = new Date();
+    const ymd = now.toISOString().slice(0, 10);
+    if (
+      now.getHours() === target.h &&
+      now.getMinutes() === target.m &&
+      lastFiredYmd !== ymd
+    ) {
+      lastFiredYmd = ymd;
+      log.info(`⏰ 스케줄 발동: ${name}`);
+      eventLogger.append({ type: 'schedule_fired', name, scheduledAt: hhmm });
+      try {
+        runFn();
+      } catch (err) {
+        log.error(`스케줄 실행 실패 (${name}): ${err.message}`);
+        eventLogger.append({ type: 'schedule_error', name, message: err.message });
+      }
     }
-    arm(name, hhmm, runFn); // 익일 재예약
-  }, delay);
+  }, 60_000);
 }
 
 /**

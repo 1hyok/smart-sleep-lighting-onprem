@@ -22,6 +22,14 @@ const history = [];
 // 'unknown' → 최초 상태. dark/bright 전이가 일어나야 발행.
 let state = 'unknown';
 
+// 상태 전이 락 (핑퐁 방지)
+//  - 일시적 가림/그림자/사람 동선으로 임계 양쪽을 빠르게 오갈 때
+//    sleep_mode / wakeup_mode 추천이 난사되는 것을 방지.
+//  - 한 번 전이가 발생하면 STATE_LOCK_MS 동안 다음 전이를 차단.
+//  - 0 = 아직 전이 없음 → 첫 전이는 즉시 허용.
+const STATE_LOCK_MS = Number(process.env.SENSOR_STATE_LOCK_MS) || 300_000;
+let lastTransitionAt = 0;
+
 /**
  * 조도 샘플 1건을 관찰.
  *  - index.js 의 publishSensorReading() 에서 호출.
@@ -31,6 +39,9 @@ function observe(lux) {
   history.push(lux);
   if (history.length > n) history.shift();
   if (history.length < n) return;
+
+  // 직전 전이 후 STATE_LOCK_MS 동안 핑퐁 방지
+  if (lastTransitionAt && Date.now() - lastTransitionAt < STATE_LOCK_MS) return;
 
   const allDark = history.every((v) => v < config.sensor.darkLux);
   const allBright = history.every((v) => v > config.sensor.brightLux);
@@ -48,6 +59,7 @@ function observe(lux) {
 function transition(newState, triggerLux) {
   const prev = state;
   state = newState;
+  lastTransitionAt = Date.now();
 
   const suggestion =
     newState === 'dark' ? 'sleep_mode' : 'wakeup_mode';
@@ -78,6 +90,21 @@ function transition(newState, triggerLux) {
     type: 'routine_suggestion',
     ...payload,
   });
+
+  // Fitbit 분석 서버가 routine/sleep|wakeup 을 publish 하는 경로가 정상 흐름.
+  // 외부 서버 단절 시에 한해 센서 기반 폴백 자동 실행을 켤 수 있도록 디폴트는
+  // 비활성. cooldown 으로 시간 스케줄과의 동시/중복 트리거를 차단.
+  if (String(process.env.AUTO_ROUTINE_ON_SENSOR).toLowerCase() === 'true') {
+    const cooldownMs = Number(process.env.AUTO_ROUTINE_COOLDOWN_MS) || 1_800_000;
+    const now = Date.now();
+    if (!transition._lastFiredAt || now - transition._lastFiredAt > cooldownMs) {
+      transition._lastFiredAt = now;
+      const routineController = require('./routineController');
+      if (newState === 'dark') routineController.startSleep();
+      else routineController.startWakeup();
+      eventLogger.append({ type: 'auto_routine_triggered', from: 'sensor', newState });
+    }
+  }
 }
 
 /**

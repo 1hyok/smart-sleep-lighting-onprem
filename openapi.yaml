@@ -1,0 +1,483 @@
+openapi: 3.0.3
+info:
+  title: Smart Sleep Lighting — Edge Node API
+  description: |
+    Raspberry Pi 엣지 노드의 로컬 REST API.
+
+    - 동일 프로세스에서 MQTT 클라이언트를 공유하여, 본 API 호출은 내부적으로
+      MQTT 발행으로 변환되거나(`/api/routine/*`, `/api/light/off`), 디바이스
+      내부 상태/로그를 직접 읽어 반환합니다(`/api/state`, `/api/logs`).
+    - SSE 스트림(`/api/stream`)으로 조도값을 실시간 푸시합니다.
+
+    **동작 환경**
+    - Express 5 + Node 18+
+    - 0.0.0.0:3000 바인딩 (로컬 네트워크 어디서든 접근 가능)
+    - 인증/CORS 미적용 (LAN 신뢰 가정). 외부 노출 시 별도 게이트웨이 필요.
+
+    **연관 MQTT 인터페이스**: `INTEGRATION.md` 참조.
+  version: 1.0.0
+  contact:
+    name: Edge Computing — 정일혁
+servers:
+  - url: http://192.168.0.230:3000
+    description: RPi 엣지 노드 (실 디바이스)
+  - url: http://localhost:3000
+    description: 로컬 개발 (MOCK_GPIO=true)
+
+tags:
+  - name: state
+    description: 디바이스 상태/구성 조회
+  - name: logs
+    description: 서비스 실행 로그
+  - name: stream
+    description: 실시간 SSE 스트림
+  - name: routine
+    description: 취침/기상 루틴 트리거
+  - name: light
+    description: 조명 직접 제어
+
+paths:
+  /api/state:
+    get:
+      tags: [state]
+      summary: 엣지 노드 현재 상태 조회
+      description: |
+        디바이스 ID, MQTT 토픽 매핑, 마지막 조도값, SSE 클라이언트 수,
+        서버 시간을 반환합니다. 대시보드 초기 로딩 시 호출.
+      responses:
+        '200':
+          description: 정상
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceState'
+              examples:
+                normal:
+                  summary: 센서 활성 상태
+                  value:
+                    deviceId: rpi-edge-bedroom-01
+                    topics:
+                      light: home/sensor/light
+                      lightControl: home/bedroom/light/control
+                      routineSleep: routine/sleep
+                      routineWakeup: routine/wakeup
+                      routineSuggestion: home/bedroom/routine_suggestion
+                      deviceStatus: home/edge/status
+                    lastLux:
+                      deviceId: rpi-edge-bedroom-01
+                      value: 225.88
+                      raw: 198
+                      source: sensor
+                      unit: lux_estimate
+                      timestamp: '2026-04-26T11:00:08.999Z'
+                    connectedSseClients: 2
+                    serverTime: '2026-04-26T11:00:09.123Z'
+                cold-start:
+                  summary: 부팅 직후 (lastLux 미수집)
+                  value:
+                    deviceId: rpi-edge-bedroom-01
+                    topics:
+                      light: home/sensor/light
+                      lightControl: home/bedroom/light/control
+                      routineSleep: routine/sleep
+                      routineWakeup: routine/wakeup
+                      routineSuggestion: home/bedroom/routine_suggestion
+                      deviceStatus: home/edge/status
+                    lastLux: null
+                    connectedSseClients: 0
+                    serverTime: '2026-04-26T11:00:00.000Z'
+
+  /api/logs:
+    get:
+      tags: [logs]
+      summary: 서비스 실행 로그 최근 N개
+      description: |
+        `service_log.jsonl` (JSON Lines) 의 마지막 N개 레코드를 파싱해 반환.
+        - 파싱 실패한 라인은 자동 스킵.
+        - 로그 파일이 없거나 읽기 실패해도 200 + 빈 배열 반환 (서버 사이드 워닝 로그 발생).
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+          description: 반환할 레코드 수. 1 미만은 1로, 500 초과는 500으로 클램프.
+      responses:
+        '200':
+          description: 정상
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count, events]
+                properties:
+                  count:
+                    type: integer
+                    description: events 배열 길이
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LogEvent'
+              examples:
+                mixed:
+                  summary: 다양한 이벤트 타입 혼재
+                  value:
+                    count: 4
+                    events:
+                      - timestamp: '2026-04-26T10:50:24.466Z'
+                        type: routine_start
+                        name: sleep
+                        from: [255, 90, 20]
+                        to: [0, 0, 0]
+                        durationMs: 60000
+                        steps: 240
+                        intervalMs: 250
+                        startedAt: '2026-04-26T10:50:24.466Z'
+                      - timestamp: '2026-04-26T10:50:24.719Z'
+                        type: routine_step
+                        name: sleep
+                        step: 1
+                        total: 240
+                        rgb: [254, 90, 20]
+                      - timestamp: '2026-04-26T10:51:24.544Z'
+                        type: routine_end
+                        name: sleep
+                        startedAt: '2026-04-26T10:50:24.466Z'
+                        endedAt: '2026-04-26T10:51:24.543Z'
+                        finalRgb: [0, 0, 0]
+                      - timestamp: '2026-04-26T10:55:00.510Z'
+                        type: light_control_received
+                        topic: home/bedroom/light/control
+                        payload: 'OFF'
+
+  /api/stream:
+    get:
+      tags: [stream]
+      summary: 조도값 실시간 SSE 스트림
+      description: |
+        `text/event-stream` 으로 센서 발행마다 `lux` 이벤트를 푸시합니다.
+        - 클라이언트 접속 직후 `: connected` 코멘트 1회 + 캐시된 마지막 값 1회 즉시 전송.
+        - 이후 ~3초 주기로 새 lux 값 푸시.
+        - `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no` 헤더로 nginx 등 프록시 버퍼링 회피.
+
+        **클라이언트 예시 (브라우저)**:
+        ```js
+        const es = new EventSource('http://192.168.0.230:3000/api/stream');
+        es.addEventListener('lux', e => console.log(JSON.parse(e.data)));
+        ```
+      responses:
+        '200':
+          description: SSE 스트림 (연결 유지)
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: text/event-stream
+            Cache-Control:
+              schema:
+                type: string
+                example: no-cache, no-transform
+            Connection:
+              schema:
+                type: string
+                example: keep-alive
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  SSE 프레임 시퀀스. 각 프레임은 `event: <name>\ndata: <json>\n\n` 형식.
+                  현재 정의된 이벤트: `lux` (LuxReading 페이로드).
+              example: |
+                : connected
+
+                event: lux
+                data: {"deviceId":"rpi-edge-bedroom-01","value":225.88,"raw":198,"source":"sensor","unit":"lux_estimate","timestamp":"2026-04-26T11:00:08.999Z"}
+
+                event: lux
+                data: {"deviceId":"rpi-edge-bedroom-01","value":226.67,"raw":197,"source":"sensor","unit":"lux_estimate","timestamp":"2026-04-26T11:00:11.994Z"}
+
+  /api/routine/{name}:
+    post:
+      tags: [routine]
+      summary: 취침/기상 루틴 트리거 (또는 취소)
+      description: |
+        엣지 노드 자기 자신이 구독 중인 `routine/sleep` 또는 `routine/wakeup` 토픽으로
+        MQTT 메시지를 발행합니다. 즉, 호출 즉시 루틴이 시작됩니다.
+
+        **취소**: body에 `"cancel"` 문자열을 그대로 보내려면 본 API가 아니라 직접 MQTT 발행
+        또는 `/api/light/off` 사용을 권장합니다 (현재 본 API는 빈 body 또는 객체를 받습니다).
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [sleep, wakeup]
+          description: 루틴 종류
+      requestBody:
+        required: false
+        description: |
+          빈 body({}) 면 `.env` 의 기본값(SLEEP/WAKEUP_DURATION_MS, ROUTINE_STEPS, palette) 사용.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoutineOptions'
+            examples:
+              default:
+                summary: 기본값 사용
+                value: {}
+              short-fade:
+                summary: 1분 짜리 짧은 fade (시연용)
+                value:
+                  duration: 60000
+                  steps: 240
+              custom-color:
+                summary: 시작 색상 커스터마이즈
+                value:
+                  duration: 600000
+                  steps: 240
+                  from: [200, 60, 10]
+                  to: [0, 0, 0]
+      responses:
+        '200':
+          description: MQTT 발행 성공 (실제 루틴 시작은 비동기, 발행 ack 시점에서 즉시 시작됨)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, routine, topic, payload]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+                  routine:
+                    type: string
+                    enum: [sleep, wakeup]
+                  topic:
+                    type: string
+                    description: 발행된 MQTT 토픽
+                  payload:
+                    oneOf:
+                      - type: string
+                        description: body 가 비어있으면 빈 문자열
+                      - $ref: '#/components/schemas/RoutineOptions'
+              examples:
+                success:
+                  value:
+                    ok: true
+                    routine: sleep
+                    topic: routine/sleep
+                    payload:
+                      duration: 60000
+                      steps: 240
+                empty:
+                  value:
+                    ok: true
+                    routine: wakeup
+                    topic: routine/wakeup
+                    payload: ''
+        '400':
+          description: 알 수 없는 루틴 이름
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: 'unknown routine: nap'
+
+  /api/light/off:
+    post:
+      tags: [light]
+      summary: 진행 중 루틴 취소 + 조명 강제 OFF
+      description: |
+        두 개의 MQTT 메시지를 순차 발행합니다.
+        1. `routine/sleep` ← `"cancel"` (진행 중인 모든 루틴 즉시 종료)
+        2. `home/bedroom/light/control` ← `"OFF"` (RGB 모두 0)
+
+        body 는 무시됩니다.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {}
+      responses:
+        '200':
+          description: 발행 성공
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+              example:
+                ok: true
+
+components:
+  schemas:
+    DeviceState:
+      type: object
+      required:
+        - deviceId
+        - topics
+        - lastLux
+        - connectedSseClients
+        - serverTime
+      properties:
+        deviceId:
+          type: string
+          description: MQTT clientId. 멀티 디바이스 식별자.
+          example: rpi-edge-bedroom-01
+        topics:
+          type: object
+          description: 본 엣지 노드가 발행/구독하는 MQTT 토픽 매핑.
+          required:
+            - light
+            - lightControl
+            - routineSleep
+            - routineWakeup
+            - routineSuggestion
+            - deviceStatus
+          properties:
+            light:
+              type: string
+              example: home/sensor/light
+            lightControl:
+              type: string
+              example: home/bedroom/light/control
+            routineSleep:
+              type: string
+              example: routine/sleep
+            routineWakeup:
+              type: string
+              example: routine/wakeup
+            routineSuggestion:
+              type: string
+              example: home/bedroom/routine_suggestion
+            deviceStatus:
+              type: string
+              example: home/edge/status
+        lastLux:
+          oneOf:
+            - $ref: '#/components/schemas/LuxReading'
+            - type: 'null'
+          description: 가장 최근 발행된 조도 측정값. 부팅 직후/미수집 시 null.
+        connectedSseClients:
+          type: integer
+          minimum: 0
+          description: 현재 `/api/stream` 에 연결된 클라이언트 수.
+        serverTime:
+          type: string
+          format: date-time
+          description: 응답 생성 시점 (ISO 8601 UTC).
+
+    LuxReading:
+      type: object
+      required:
+        - deviceId
+        - value
+        - source
+        - unit
+        - timestamp
+      properties:
+        deviceId:
+          type: string
+          example: rpi-edge-bedroom-01
+        value:
+          type: number
+          format: float
+          description: 추정 조도값 (캘리브레이션 X — `unit` 참조).
+          example: 225.88
+        raw:
+          oneOf:
+            - type: integer
+              minimum: 0
+              maximum: 255
+            - type: 'null'
+          description: PCF8591 8-bit ADC 원시값 (0..255). source=mock 이면 null.
+          example: 198
+        source:
+          type: string
+          enum: [sensor, mock]
+          description: 실제 센서 측정값(sensor)인지 폴백 mock 인지. 데이터팀이 mock 샘플 필터링용.
+        unit:
+          type: string
+          enum: [lux_estimate]
+          description: '"lux_estimate" — 진짜 lux 가 아님을 명시. 캘리브레이션 후 변경 예정.'
+        timestamp:
+          type: string
+          format: date-time
+          description: 측정 시각 (ISO 8601 UTC).
+
+    RoutineOptions:
+      type: object
+      description: 루틴 페이딩 파라미터. 모든 필드 옵션이며 미지정 시 .env 기본값.
+      properties:
+        duration:
+          type: integer
+          minimum: 1000
+          description: fade 총 길이(ms). sleep/wakeup 기본 600000(10분).
+          example: 60000
+        steps:
+          type: integer
+          minimum: 1
+          description: 단계 수. 기본 240. 단계당 최소 50ms 보장(`Math.max(50, duration/steps)`).
+          example: 240
+        from:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+            maximum: 255
+          minItems: 3
+          maxItems: 3
+          description: 시작 RGB. 미지정 시 .env palette(SLEEP_COLOR_FROM/WAKEUP_COLOR_FROM).
+          example: [255, 90, 20]
+        to:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+            maximum: 255
+          minItems: 3
+          maxItems: 3
+          description: 종료 RGB.
+          example: [0, 0, 0]
+
+    LogEvent:
+      type: object
+      description: |
+        `service_log.jsonl` 의 단일 레코드. `type` 별로 추가 필드가 다름.
+
+        **현재 정의된 type**:
+        - `service_start`, `service_stop`
+        - `routine_start`, `routine_step`, `routine_end`, `routine_cancelled`
+        - `schedule_fired`, `schedule_error`
+        - `light_control_received`
+        - `routine_suggestion`, `auto_routine_triggered`
+        - `sensor_error`, `uncaught_exception`, `unhandled_rejection`
+      required:
+        - timestamp
+        - type
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        type:
+          type: string
+          example: routine_start
+      additionalProperties: true
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: 사람이 읽기 쉬운 단일 에러 메시지.

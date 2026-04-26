@@ -14,6 +14,14 @@ const log = buildLogger('mqtt');
 const handlers = new Map();
 let client = null;
 
+// 재연결 지수 백오프
+//  - 브로커 영구 단절 시 고정 2초 재시도가 로그/네트워크/CPU 자원을 고갈시킴.
+//  - INITIAL 부터 시작해 실패 누적마다 2배 증가, MAX 에서 상한.
+//  - 한 번이라도 connect 성공하면 attempts 와 reconnectPeriod 를 리셋.
+const RECONNECT_INITIAL_MS = Number(process.env.MQTT_RECONNECT_INITIAL_MS) || 2000;
+const RECONNECT_MAX_MS = Number(process.env.MQTT_RECONNECT_MAX_MS) || 60_000;
+let reconnectAttempts = 0;
+
 // 미연결 시 보존해야 할 "중요 토픽" 발행 큐.
 //  - 센서 주기 발행처럼 휘발성이 큰 데이터는 굳이 큐잉하지 않고 드랍.
 //  - 루틴 명령/디바이스 상태/추천/조명 제어는 손실되면 의미가 큼 → 보존.
@@ -25,6 +33,10 @@ const QUEUEABLE_TOPICS = new Set([
   config.topics.routineWakeup,
   config.topics.lightControl,
 ]);
+
+// 브로커 장기 단절 시 큐가 무한 성장하면 RPi 메모리가 잠식돼 OOM 위험.
+// 한도 초과 시 가장 오래된 메시지부터 드랍 (FIFO).
+const PENDING_QUEUE_MAX = Number(process.env.MQTT_PENDING_QUEUE_MAX) || 200;
 
 /**
  * 연결 복구 시 보류된 메시지를 차례로 발행.
@@ -75,7 +87,7 @@ function connect() {
     username: config.mqtt.username,
     password: config.mqtt.password,
     clean: true, // 세션을 매번 새로 시작
-    reconnectPeriod: 2000, // 2초 간격 재연결
+    reconnectPeriod: RECONNECT_INITIAL_MS, // 초기 2초, 실패 누적 시 지수 증가
     connectTimeout: 10_000, // 10초 타임아웃
     will: {
       topic: config.topics.deviceStatus,
@@ -87,7 +99,13 @@ function connect() {
 
   // 연결 성공
   client.on('connect', () => {
-    log.info('브로커 연결 성공');
+    if (reconnectAttempts > 0) {
+      log.info(`브로커 연결 성공 (재연결 ${reconnectAttempts}회 시도 후)`);
+      reconnectAttempts = 0;
+      client.options.reconnectPeriod = RECONNECT_INITIAL_MS;
+    } else {
+      log.info('브로커 연결 성공');
+    }
 
     // LWT 짝꿍: 정상 접속 시 retained "online" 발행 → 구독자가
     // 항상 디바이스 가용 여부를 한 번의 read 로 알 수 있음.
@@ -113,8 +131,20 @@ function connect() {
     flushQueue();
   });
 
-  // 재연결 시도 중
-  client.on('reconnect', () => log.warn('브로커 재연결 시도 중...'));
+  // 재연결 시도 중 — 지수 백오프 적용
+  //  - mqtt.js 는 매 재연결 트리거 직전 client.options.reconnectPeriod 를
+  //    참조해 setTimeout 을 걸기 때문에, 여기서 갱신하면 다음 회차부터 반영됨.
+  client.on('reconnect', () => {
+    reconnectAttempts += 1;
+    const nextPeriod = Math.min(
+      RECONNECT_INITIAL_MS * Math.pow(2, reconnectAttempts - 1),
+      RECONNECT_MAX_MS,
+    );
+    client.options.reconnectPeriod = nextPeriod;
+    log.warn(
+      `브로커 재연결 시도 중... (#${reconnectAttempts}, 다음 간격 ${nextPeriod}ms)`,
+    );
+  });
 
   // 연결 종료
   client.on('close', () => log.warn('브로커 연결 종료'));
@@ -169,6 +199,12 @@ function publish(topic, message, options = { qos: 0, retain: false }) {
 
   if (!client || !client.connected) {
     if (QUEUEABLE_TOPICS.has(topic)) {
+      if (pendingQueue.length >= PENDING_QUEUE_MAX) {
+        const dropped = pendingQueue.shift();
+        log.warn(
+          `발행 큐 한도(${PENDING_QUEUE_MAX}) 초과 — 가장 오래된 ${dropped.topic} 드랍`,
+        );
+      }
       pendingQueue.push({ topic, payload, options });
       log.warn(`발행 큐잉 [${topic}] (큐 크기=${pendingQueue.length})`);
     } else {

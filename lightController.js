@@ -55,18 +55,27 @@ function clamp(n) {
 //  - lastWritten 은 보정 전 값을 보관해 getState/상태 조회 의미를 일관되게 유지.
 const GAMMA = Number(process.env.LIGHT_GAMMA) || 2.2;
 
+// PWM 분해능 확장 — 기본 256 → PWM_RANGE
+//  - 외부 인터페이스(R/G/B)는 0~255 그대로 유지하고, 듀티 변환 시점에만
+//    0..PWM_RANGE 로 스케일 업. 어두운 영역(amber→off 끝부분)에서 RGB 1단위
+//    변화도 듀티에 미세히 반영돼 계단(staircase) 현상이 줄어듦.
+//  - pigpio software PWM frequency = sample_rate / range. 1000 으로 잡으면
+//    기본 200Hz 대 → 사람 눈에 깜빡임 미인지.
+const PWM_RANGE = Number(process.env.PWM_RANGE) || 1000;
+
+// 0..255 RGB → 0..PWM_RANGE 듀티 (감마 보정 포함).
 function gammaCorrect(v) {
   const norm = clamp(v) / 255;
-  return Math.round(Math.pow(norm, GAMMA) * 255);
+  return Math.round(Math.pow(norm, GAMMA) * PWM_RANGE);
 }
 
 /**
- * RGB 값을 pigpio pwmWrite 용 듀티 사이클로 변환.
- *  - Common Anode 타입이면 로직이 반전됨 (255 - x).
+ * 감마 보정 결과(0..PWM_RANGE)를 받아 Common Anode 일 경우 반전.
+ *  - 기존 0..255 스케일에서 0..PWM_RANGE 스케일로 확장됨.
  */
 function toDuty(value) {
-  const v = clamp(value);
-  return config.gpio.commonAnode ? 255 - v : v;
+  const v = Math.max(0, Math.min(PWM_RANGE, Math.round(Number(value) || 0)));
+  return config.gpio.commonAnode ? PWM_RANGE - v : v;
 }
 
 /**
@@ -84,10 +93,15 @@ function init() {
     channels.r = new PigpioGpio(config.gpio.rgb.r, { mode: PigpioGpio.OUTPUT });
     channels.g = new PigpioGpio(config.gpio.rgb.g, { mode: PigpioGpio.OUTPUT });
     channels.b = new PigpioGpio(config.gpio.rgb.b, { mode: PigpioGpio.OUTPUT });
+    // PWM 분해능 확장 (기본 256 → PWM_RANGE). 저조도 구간 미세 제어용.
+    channels.r.pwmRange(PWM_RANGE);
+    channels.g.pwmRange(PWM_RANGE);
+    channels.b.pwmRange(PWM_RANGE);
     // 초기값: 전체 OFF
     writeRgb(0, 0, 0);
     log.info(
-      `RGB GPIO 초기화 완료 (R=${config.gpio.rgb.r}, G=${config.gpio.rgb.g}, B=${config.gpio.rgb.b}, commonAnode=${config.gpio.commonAnode})`,
+      `RGB GPIO 초기화 완료 (R=${config.gpio.rgb.r}, G=${config.gpio.rgb.g}, B=${config.gpio.rgb.b}, ` +
+        `commonAnode=${config.gpio.commonAnode}, pwmRange=${PWM_RANGE})`,
     );
   } catch (err) {
     log.error('RGB GPIO 초기화 실패:', err.message);
