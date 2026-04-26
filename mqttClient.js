@@ -24,6 +24,13 @@ const RECONNECT_INITIAL_MS = Number(process.env.MQTT_RECONNECT_INITIAL_MS) || 20
 const RECONNECT_MAX_MS = Number(process.env.MQTT_RECONNECT_MAX_MS) || 60_000;
 let reconnectAttempts = 0;
 
+// MQTT keepalive (초)
+//  - 브로커는 1.5×keepalive 동안 패킷이 없으면 LWT 발동.
+//  - mqtt.js 기본값 60초 → 비정상 단절 후 최대 ~90초 인지 지연.
+//  - 30초로 낮춰 LWT 인지 시간을 ~45초로 단축. 로컬 브로커 + 단일 디바이스
+//    환경에서 추가 트래픽 비용은 무시 수준.
+const KEEPALIVE_SEC = Number(process.env.MQTT_KEEPALIVE_SEC) || 30;
+
 /**
  * LWT 페이로드 빌더 — connect 시점/disconnect 시점에 모두 사용.
  *  - retain=true 로 발행되므로 구독자(백엔드)가 어느 시점에 붙어도
@@ -64,6 +71,7 @@ function connect() {
     clean: true,
     reconnectPeriod: RECONNECT_INITIAL_MS,
     connectTimeout: 10_000,
+    keepalive: KEEPALIVE_SEC,
     will: {
       topic: config.topics.deviceStatus,
       payload: buildStatusPayload('offline', { reason: 'unexpected_disconnect' }),

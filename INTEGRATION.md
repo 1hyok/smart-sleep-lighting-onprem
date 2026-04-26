@@ -153,9 +153,8 @@ function isOnline(deviceId) {
 
 ### 4.3 운영 팁
 
-- **keepalive 기본값**: mqtt.js 기본 60초. 브로커는 1.5×keepalive(=90초) 동안 패킷이 없으면 LWT 발동.
-  → 즉 비정상 단절 후 **최대 ~90초까지** offline 인지 지연 가능. 이건 트레이드오프.
-  더 빨리 알고 싶으면 엣지 측 mqtt.js 옵션에 `keepalive: 30` 등 명시.
+- **keepalive**: 기본 30초 적용 (인지 ~45초). `MQTT_KEEPALIVE_SEC` 로 override 가능.
+  브로커는 1.5×keepalive 동안 패킷이 없으면 LWT 발동 (∴ 30 × 1.5 = ~45초).
 - **graceful shutdown vs unexpected**: `reason` 필드로 구분 가능. 운영 모니터링에서
   `unexpected_disconnect` 가 잦으면 네트워크/전원 문제 시그널.
 - **다중 디바이스**: 본 가이드는 `rpi-edge-bedroom-01` 단일 기준. 향후 여러 침실에 배포 시
