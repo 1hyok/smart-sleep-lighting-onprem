@@ -33,12 +33,15 @@ const config = {
   },
 
   topics: {
-    lux: process.env.TOPIC_SENSOR_LUX || 'home/sensor/lux',
+    light: process.env.TOPIC_SENSOR_LIGHT || 'home/sensor/light',
     lightControl: process.env.TOPIC_LIGHT_CONTROL || 'home/bedroom/light/control',
     routineSleep: process.env.TOPIC_ROUTINE_SLEEP || 'routine/sleep',
     routineWakeup: process.env.TOPIC_ROUTINE_WAKEUP || 'routine/wakeup',
     routineSuggestion:
       process.env.TOPIC_ROUTINE_SUGGESTION || 'home/bedroom/routine_suggestion',
+    // LWT(Last Will & Testament) + 정상 접속/종료 알림용. 항상 retain=true 로
+    // 발행하므로 구독자는 어느 시점에 붙어도 최신 상태 1건을 즉시 받음.
+    deviceStatus: process.env.TOPIC_DEVICE_STATUS || 'home/edge/status',
   },
 
   sensor: {
@@ -47,6 +50,16 @@ const config = {
     brightLux: Number(process.env.SENSOR_BRIGHT_LUX) || 400,
     // 연속 N개 샘플이 조건을 만족해야 상태 전이 (히스테리시스)
     window: Number(process.env.SENSOR_WINDOW) || 2,
+
+    // YL-40 (PCF8591) I2C 설정
+    //  - i2cBus: RPi 의 /dev/i2c-N (Pi 2 이상은 1번 버스가 표준)
+    //  - i2cAddress: PCF8591 칩 주소. A0/A1/A2 점퍼 미납땜 기본 = 0x48
+    //  - channel: 조도(LDR) 가 연결된 아날로그 입력. YL-40 보드는 보통 AIN0
+    //  - invert: 보드의 분압 회로상 "어두울수록 ADC ↑" 면 true
+    i2cBus: Number(process.env.PCF8591_I2C_BUS) || 1,
+    i2cAddress: Number(process.env.PCF8591_I2C_ADDRESS) || 0x48,
+    channel: Math.max(0, Math.min(3, Number(process.env.PCF8591_CHANNEL) || 0)),
+    invert: String(process.env.PCF8591_INVERT).toLowerCase() === 'true',
   },
 
   routines: {

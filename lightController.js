@@ -48,6 +48,18 @@ function clamp(n) {
   return Math.max(0, Math.min(255, Math.round(Number(n) || 0)));
 }
 
+// 감마 보정 (γ=2.2 기본).
+//  - 인간 시각 응답이 로그 스케일이라 선형 보간 페이딩 끝부분에서
+//    "급격히 어두워지는/밝아지는" 체감이 발생.
+//  - 0..255 → 0..1 → ^γ → 0..255 비선형 매핑하여 자연스럽게 만듦.
+//  - lastWritten 은 보정 전 값을 보관해 getState/상태 조회 의미를 일관되게 유지.
+const GAMMA = Number(process.env.LIGHT_GAMMA) || 2.2;
+
+function gammaCorrect(v) {
+  const norm = clamp(v) / 255;
+  return Math.round(Math.pow(norm, GAMMA) * 255);
+}
+
 /**
  * RGB 값을 pigpio pwmWrite 용 듀티 사이클로 변환.
  *  - Common Anode 타입이면 로직이 반전됨 (255 - x).
@@ -98,9 +110,9 @@ function writeRgb(r, g, b) {
   }
 
   try {
-    channels.r.pwmWrite(toDuty(R));
-    channels.g.pwmWrite(toDuty(G));
-    channels.b.pwmWrite(toDuty(B));
+    channels.r.pwmWrite(toDuty(gammaCorrect(R)));
+    channels.g.pwmWrite(toDuty(gammaCorrect(G)));
+    channels.b.pwmWrite(toDuty(gammaCorrect(B)));
     lastWritten = { r: R, g: G, b: B };
   } catch (err) {
     log.error(`RGB 쓰기 실패: ${err.message}`);
@@ -234,13 +246,16 @@ function hexToRgb(hex) {
 }
 
 /**
- * 종료 시 채널 OFF.
+ * 종료 시 채널 OFF + pigpio C 라이브러리 명시적 종료.
+ *  - pwmWrite(0) 만 부르면 LED 는 꺼지지만 pigpio 가 핀 모드를 잡고 있는 상태.
+ *  - terminate() 까지 부르면 다음 부팅/재실행 시 충돌 없이 깔끔하게 재초기화.
  */
 function cleanup() {
   if (useMock) return;
   try {
     writeRgb(0, 0, 0);
-    log.info('RGB GPIO 자원 해제 완료');
+    require('pigpio').terminate();
+    log.info('RGB GPIO 자원 해제 완료 (pigpio terminated)');
   } catch (err) {
     log.error('cleanup 오류:', err.message);
   }

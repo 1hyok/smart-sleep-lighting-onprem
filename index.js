@@ -3,7 +3,7 @@
 //  - 애플리케이션 진입점.
 //  - 책임:
 //     · MQTT 브로커 연결/구독/발행
-//     · 가상 조도 센서 주기 발행            → home/sensor/lux
+//     · YL-40(PCF8591) 조도 센서 주기 발행   → home/sensor/light
 //     · 직접 RGB 조명 제어 구독              → home/bedroom/light/control
 //     · 취침/기상 루틴 구독 (색온도 페이딩)  → routine/sleep, routine/wakeup
 //     · 조도 기반 자동 추천 발행             → home/bedroom/routine_suggestion
@@ -18,6 +18,7 @@ const sensor = require('./sensor');
 const sensorWatcher = require('./sensorWatcher');
 const eventLogger = require('./eventLogger');
 const webServer = require('./webServer');
+const scheduler = require('./scheduler');
 const buildLogger = require('./logger');
 
 const log = buildLogger('app');
@@ -25,26 +26,40 @@ const log = buildLogger('app');
 let publishTimer = null;
 
 /**
- * 가상 조도값 읽기 → MQTT 발행 + 워처 관찰.
+ * 조도값 읽기 → MQTT 발행 + 워처 관찰.
+ *  - 실제 센서 / mock 분기는 sensor.js 내부에서 결정 + 로깅.
+ *  - 페이로드 스키마 (데이터팀 인계용):
+ *      deviceId   string   — MQTT clientId, 멀티 디바이스 식별
+ *      value      number   — 추정 조도 (캘리브레이션 X)
+ *      raw        number?  — PCF8591 8bit ADC (0..255). mock 이면 null
+ *      source     string   — "sensor" | "mock". mock 표본 필터링용
+ *      unit       string   — "lux_estimate" (진짜 lux 아님을 명시)
+ *      timestamp  string   — ISO 8601 (Fitbit 등과 시간축 정렬)
+ *  - QoS 1 로 발행 → 브로커 잠시 끊겨도 mqtt.js 내부 큐가 보관 후 재전송.
  */
 function publishSensorReading() {
   try {
-    const lux = sensor.readIlluminance();
+    const reading = sensor.readIlluminance();
     const payload = {
       deviceId: config.mqtt.clientId,
-      value: lux,
-      unit: 'lux',
+      value: reading.lux,
+      raw: reading.raw,
+      source: reading.source,
+      unit: 'lux_estimate',
       timestamp: new Date().toISOString(),
     };
 
-    mqttClient.publish(config.topics.lux, payload, { qos: 0, retain: false });
-    log.info(`조도값 발행 → ${lux} lux  [${config.topics.lux}]`);
+    mqttClient.publish(config.topics.light, payload, { qos: 1, retain: false });
+    log.info(
+      `조도값 발행 → ${reading.lux} ${payload.unit} ` +
+        `[${config.topics.light}] (source=${reading.source})`,
+    );
 
     // 웹 대시보드 SSE 클라이언트에도 실시간 푸시
     webServer.broadcastLux(payload);
 
     // 어두워짐/밝아짐 전이 감시 (추천 메시지 자동 발행)
-    sensorWatcher.observe(lux);
+    sensorWatcher.observe(reading.lux);
   } catch (err) {
     log.error('센서 주기 발행 실패:', err.message);
     eventLogger.append({ type: 'sensor_error', message: err.message });
@@ -70,6 +85,9 @@ function bootstrap() {
     publishMqtt: (topic, message) =>
       mqttClient.publish(topic, message, { qos: 1, retain: false }),
   });
+
+  // 시간 기반 폴백 스케줄러 (외부 서버 단절 시에도 정시 발동 보장).
+  scheduler.start();
 
   const client = mqttClient.connect();
 
@@ -104,7 +122,17 @@ function bootstrap() {
   });
 }
 
-async function shutdown(signal) {
+// 종료 절차가 중복 진행되는 걸 막는 가드.
+// SIGTERM 받고 disconnect 도는 도중 SIGINT 가 또 와도 한 번만 실행.
+let isShuttingDown = false;
+
+async function shutdown(signal, exitCode = 0) {
+  if (isShuttingDown) {
+    log.warn(`${signal} 수신 — 이미 종료 진행 중, 무시`);
+    return;
+  }
+  isShuttingDown = true;
+
   log.warn(`${signal} 수신 → 종료 절차 시작`);
   eventLogger.append({ type: 'service_stop', signal });
   try {
@@ -112,19 +140,24 @@ async function shutdown(signal) {
     routineController.cleanup();
     await mqttClient.disconnect();
     lightController.cleanup();
+    sensor.cleanup();
   } catch (err) {
     log.error('shutdown 중 오류:', err.message);
   } finally {
     log.info('프로세스 종료');
-    process.exit(0);
+    process.exit(exitCode);
   }
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+// uncaughtException / unhandledRejection 이후에는 프로세스 상태가 손상됐을 수
+// 있음 → Node 공식 권고대로 종료. systemd 등 프로세스 매니저가 재시작 담당.
 process.on('uncaughtException', (err) => {
   log.error('uncaughtException:', err);
   eventLogger.append({ type: 'uncaught_exception', message: err.message });
+  shutdown('uncaughtException', 1);
 });
 process.on('unhandledRejection', (reason) => {
   log.error('unhandledRejection:', reason);
@@ -132,6 +165,7 @@ process.on('unhandledRejection', (reason) => {
     type: 'unhandled_rejection',
     message: reason instanceof Error ? reason.message : String(reason),
   });
+  shutdown('unhandledRejection', 1);
 });
 
 bootstrap();
