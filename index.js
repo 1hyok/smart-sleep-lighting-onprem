@@ -1,23 +1,18 @@
 // ──────────────────────────────────────────────
 // index.js
-//  - 애플리케이션 진입점.
-//  - 책임:
-//     · MQTT 브로커 연결/구독/발행
-//     · YL-40(PCF8591) 조도 센서 주기 발행   → home/sensor/light
-//     · 직접 RGB 조명 제어 구독              → home/bedroom/light/control
-//     · 취침/기상 루틴 구독 (색온도 페이딩)  → routine/sleep, routine/wakeup
-//     · 조도 기반 자동 추천 발행             → home/bedroom/routine_suggestion
-//     · 주요 이벤트 로컬 JSONL 영속화
+//  - 엣지 노드 진입점.
+//  - 단일 책임:
+//     YL-40(PCF8591) 조도 센서 값 수집
+//     → sensor.js 내부 노이즈 필터링 (burst median + 이동 평균)
+//     → MQTT 브로커(Mosquitto) 의 home/sensor/illuminance 토픽으로 Publish
+//  - 비즈니스 로직(루틴/조명 제어/추천/스케줄링)은 백엔드 책임이며
+//    이 노드에는 포함되지 않음.
 // ──────────────────────────────────────────────
 
 const config = require('./config');
 const mqttClient = require('./mqttClient');
-const lightController = require('./lightController');
-const routineController = require('./routineController');
 const sensor = require('./sensor');
-const sensorWatcher = require('./sensorWatcher');
 const eventLogger = require('./eventLogger');
-const scheduler = require('./scheduler');
 const buildLogger = require('./logger');
 
 const log = buildLogger('app');
@@ -25,15 +20,15 @@ const log = buildLogger('app');
 let publishTimer = null;
 
 /**
- * 조도값 읽기 → MQTT 발행 + 워처 관찰.
+ * 조도값 1회 읽기 → MQTT 발행.
  *  - 실제 센서 / mock 분기는 sensor.js 내부에서 결정 + 로깅.
- *  - 페이로드 스키마 (데이터팀 인계용):
+ *  - 페이로드 스키마 (백엔드 인계용):
  *      deviceId   string   — MQTT clientId, 멀티 디바이스 식별
  *      value      number   — 추정 조도 (캘리브레이션 X)
  *      raw        number?  — PCF8591 8bit ADC (0..255). mock 이면 null
  *      source     string   — "sensor" | "mock". mock 표본 필터링용
  *      unit       string   — "lux_estimate" (진짜 lux 아님을 명시)
- *      timestamp  string   — ISO 8601 (Fitbit 등과 시간축 정렬)
+ *      timestamp  string   — ISO 8601
  *  - QoS 1 로 발행 → 브로커 잠시 끊겨도 mqtt.js 내부 큐가 보관 후 재전송.
  */
 function publishSensorReading() {
@@ -48,14 +43,11 @@ function publishSensorReading() {
       timestamp: new Date().toISOString(),
     };
 
-    mqttClient.publish(config.topics.light, payload, { qos: 1, retain: false });
+    mqttClient.publish(config.topics.illuminance, payload, { qos: 1, retain: false });
     log.info(
       `조도값 발행 → ${reading.lux} ${payload.unit} ` +
-        `[${config.topics.light}] (source=${reading.source})`,
+        `[${config.topics.illuminance}] (source=${reading.source})`,
     );
-
-    // 어두워짐/밝아짐 전이 감시 (추천 메시지 자동 발행)
-    sensorWatcher.observe(reading.lux);
   } catch (err) {
     log.error('센서 주기 발행 실패:', err.message);
     eventLogger.append({ type: 'sensor_error', message: err.message });
@@ -63,51 +55,19 @@ function publishSensorReading() {
 }
 
 function bootstrap() {
-  log.info('── 스마트 수면 조명 엣지 노드 기동 (RGB) ──');
-  log.info(`모드: ${config.gpio.mock ? 'MOCK (GPIO 비활성)' : 'RPI (GPIO 활성)'}`);
-  log.info(
-    `RGB 핀: R=${config.gpio.rgb.r}, G=${config.gpio.rgb.g}, B=${config.gpio.rgb.b} ` +
-      `(commonAnode=${config.gpio.commonAnode})`,
-  );
+  log.info('── 스마트 수면 조명 엣지 노드 기동 (조도 센서) ──');
+  log.info(`모드: ${config.sensor.mock ? 'MOCK (I2C 비활성)' : 'RPI (I2C 활성)'}`);
   log.info(`이벤트 로그 파일: ${eventLogger.getPath()}`);
 
   eventLogger.append({ type: 'service_start', clientId: config.mqtt.clientId });
 
-  lightController.init();
-
-  // 시간 기반 폴백 스케줄러 (외부 서버 단절 시에도 정시 발동 보장).
-  scheduler.start();
-
   const client = mqttClient.connect();
 
   client.once('connect', () => {
-    // 직접 RGB 조명 제어
-    mqttClient.subscribe(config.topics.lightControl, (payload) => {
-      const text = payload.toString();
-      eventLogger.append({
-        type: 'light_control_received',
-        topic: config.topics.lightControl,
-        payload: text,
-      });
-      lightController.handleControlMessage(payload);
-    });
-
-    // 취침 / 기상 루틴
-    mqttClient.subscribe(config.topics.routineSleep, (payload) => {
-      routineController.handleRoutineMessage('sleep', payload);
-    });
-    mqttClient.subscribe(config.topics.routineWakeup, (payload) => {
-      routineController.handleRoutineMessage('wakeup', payload);
-    });
-
-    // 가상 센서 파이프라인 시작
+    // 첫 발행은 즉시, 이후 주기 발행
     publishSensorReading();
     publishTimer = setInterval(publishSensorReading, config.sensor.publishIntervalMs);
     log.info(`센서 발행 타이머 시작 (주기 ${config.sensor.publishIntervalMs}ms)`);
-    log.info(
-      `센서 워처 임계치: dark < ${config.sensor.darkLux} lux, ` +
-        `bright > ${config.sensor.brightLux} lux (window=${config.sensor.window})`,
-    );
   });
 }
 
@@ -126,10 +86,7 @@ async function shutdown(signal, exitCode = 0) {
   eventLogger.append({ type: 'service_stop', signal });
   try {
     if (publishTimer) clearInterval(publishTimer);
-    scheduler.stop();
-    routineController.cleanup();
     await mqttClient.disconnect();
-    lightController.cleanup();
     sensor.cleanup();
   } catch (err) {
     log.error('shutdown 중 오류:', err.message);
