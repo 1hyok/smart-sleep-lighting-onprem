@@ -13,7 +13,6 @@
   "type": "commonjs",
   "dependencies": {
     "dotenv": "^17.4.2",
-    "express": "^5.2.1",
     "i2c-bus": "^5.2.3",
     "mqtt": "^5.15.1",
     "pigpio": "^3.3.1"

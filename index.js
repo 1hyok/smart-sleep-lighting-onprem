@@ -17,7 +17,6 @@ const routineController = require('./routineController');
 const sensor = require('./sensor');
 const sensorWatcher = require('./sensorWatcher');
 const eventLogger = require('./eventLogger');
-const webServer = require('./webServer');
 const scheduler = require('./scheduler');
 const buildLogger = require('./logger');
 
@@ -55,9 +54,6 @@ function publishSensorReading() {
         `[${config.topics.light}] (source=${reading.source})`,
     );
 
-    // 웹 대시보드 SSE 클라이언트에도 실시간 푸시
-    webServer.broadcastLux(payload);
-
     // 어두워짐/밝아짐 전이 감시 (추천 메시지 자동 발행)
     sensorWatcher.observe(reading.lux);
   } catch (err) {
@@ -78,13 +74,6 @@ function bootstrap() {
   eventLogger.append({ type: 'service_start', clientId: config.mqtt.clientId });
 
   lightController.init();
-
-  // Express 대시보드 서버 시작 (MQTT 연결과 병렬로 가동).
-  // publishMqtt 주입 → 같은 프로세스 내 MQTT 클라이언트를 공유.
-  webServer.start({
-    publishMqtt: (topic, message) =>
-      mqttClient.publish(topic, message, { qos: 1, retain: false }),
-  });
 
   // 시간 기반 폴백 스케줄러 (외부 서버 단절 시에도 정시 발동 보장).
   scheduler.start();
@@ -137,6 +126,7 @@ async function shutdown(signal, exitCode = 0) {
   eventLogger.append({ type: 'service_stop', signal });
   try {
     if (publishTimer) clearInterval(publishTimer);
+    scheduler.stop();
     routineController.cleanup();
     await mqttClient.disconnect();
     lightController.cleanup();

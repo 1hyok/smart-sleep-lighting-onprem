@@ -27,11 +27,6 @@ const config = {
     password: process.env.MQTT_PASSWORD || undefined,
   },
 
-  web: {
-    // Express 대시보드 HTTP 포트 (0.0.0.0 바인딩)
-    port: Number(process.env.WEB_PORT) || 3000,
-  },
-
   topics: {
     light: process.env.TOPIC_SENSOR_LIGHT || 'home/sensor/light',
     lightControl: process.env.TOPIC_LIGHT_CONTROL || 'home/bedroom/light/control',

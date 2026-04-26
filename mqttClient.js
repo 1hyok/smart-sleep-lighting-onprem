@@ -76,6 +76,13 @@ function buildStatusPayload(status, extra = {}) {
  *    감지하면 자동으로 status:'offline' 메시지를 발행해줌.
  */
 function connect() {
+  // 멱등성 가드 — bootstrap 외 경로(테스트/hot-reload 등)에서 중복 호출 시
+  // 새 client 객체가 이중 생성되어 이전 소켓이 누수되는 것을 방지.
+  if (client) {
+    log.warn('이미 연결된 client 존재 — 기존 client 반환 (중복 connect 호출)');
+    return client;
+  }
+
   const authInfo = config.mqtt.username ? ` as "${config.mqtt.username}"` : ' (anonymous)';
   log.info(
     `브로커 연결 시도: ${config.mqtt.brokerUrl}${authInfo} (clientId=${config.mqtt.clientId})`,

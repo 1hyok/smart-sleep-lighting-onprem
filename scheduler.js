@@ -13,6 +13,9 @@ const buildLogger = require('./logger');
 
 const log = buildLogger('scheduler');
 
+// 등록된 setInterval 핸들. shutdown 시 stop() 으로 일괄 해제.
+const intervals = [];
+
 /**
  * "HH:MM" 문자열 파싱. 잘못된 형식이면 null.
  */
@@ -21,17 +24,6 @@ function parseHHMM(s) {
   const [h, m] = s.split(':').map(Number);
   if (h < 0 || h > 23 || m < 0 || m > 59) return null;
   return { h, m };
-}
-
-/**
- * 다음 발동 시각까지의 ms. 이미 지난 시각이면 익일로 산정.
- */
-function nextFireDelayMs(target) {
-  const now = new Date();
-  const fire = new Date(now);
-  fire.setHours(target.h, target.m, 0, 0);
-  if (fire <= now) fire.setDate(fire.getDate() + 1);
-  return fire - now;
 }
 
 /**
@@ -49,7 +41,7 @@ function arm(name, hhmm, runFn) {
   // 의 단조 시계는 그 점프를 따라가지 않아 발동이 어긋남. 1분 폴링 + ymd
   // 게이트로 동일 분 내 중복 발동을 차단하면서 시계 변경에 둔감해짐.
   let lastFiredYmd = null;
-  setInterval(() => {
+  const handle = setInterval(() => {
     const now = new Date();
     const ymd = now.toISOString().slice(0, 10);
     if (
@@ -68,6 +60,8 @@ function arm(name, hhmm, runFn) {
       }
     }
   }, 60_000);
+
+  intervals.push(handle);
 }
 
 /**
@@ -78,4 +72,14 @@ function start() {
   arm('wakeup', process.env.SCHEDULE_WAKEUP, () => routineController.startWakeup());
 }
 
-module.exports = { start };
+/**
+ * 등록된 모든 폴링 인터벌 해제. shutdown() 단계에서 호출.
+ *  - 프로세스 종료 시에는 자동으로 정리되지만, hot-reload/테스트 시나리오에서
+ *    핸들 누수를 방지.
+ */
+function stop() {
+  while (intervals.length) clearInterval(intervals.pop());
+  log.info('스케줄러 폴링 인터벌 해제 완료');
+}
+
+module.exports = { start, stop };
