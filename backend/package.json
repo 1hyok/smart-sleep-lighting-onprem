@@ -1,0 +1,27 @@
+{
+  "name": "smart-sleep-backend",
+  "version": "1.0.0",
+  "description": "Backend data layer: Fitbit API sync + MQTT subscriber + SQLite pipeline",
+  "main": "index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18",
+    "bun": ">=1.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "MOCK_FITBIT=true STORE_MOCK_SENSOR=true bun run index.js",
+    "auth": "node fitbit/auth.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "mqtt": "^5.15.1",
+    "node-cron": "^3.0.3"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^9.4.3"
+  },
+  "notes": {
+    "sqlite": "Bun 런타임은 bun:sqlite(내장)를 사용. RPi Node.js 배포는 better-sqlite3를 사용 (npm install on RPi)."
+  }
+}
