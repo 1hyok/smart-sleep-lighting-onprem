@@ -4,3 +4,5 @@ node_modules/
 !.env.example
 *.log
 .DS_Store
+# SQLite DB 파일 (민감 데이터 + 대용량)
+backend/data/
