@@ -98,6 +98,22 @@ CREATE TABLE IF NOT EXISTS routine_steps (
   success        INTEGER NOT NULL DEFAULT 1
 );
 
+-- ── 조명 스케줄 설정 ─────────────────────────────────────────────────────────
+-- 사용자가 설정한 취침/기상 시각. 스케줄러가 이를 참조하여 루틴 실행.
+CREATE TABLE IF NOT EXISTS schedules (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id         INTEGER NOT NULL REFERENCES users(id),
+  sleep_time      TEXT    NOT NULL,   -- 'HH:MM' (매일 반복, KST 기준)
+  wake_time       TEXT    NOT NULL,   -- 'HH:MM'
+  sleep_offset_min INTEGER NOT NULL DEFAULT 30,  -- 취침 루틴 시작: 취침 시각 N분 전
+  wake_offset_min  INTEGER NOT NULL DEFAULT 15,  -- 기상 루틴 시작: 기상 시각 N분 전
+  enabled              INTEGER NOT NULL DEFAULT 1,   -- 1=활성, 0=비활성
+  last_sleep_triggered TEXT,   -- 취침 루틴 마지막 실행 (중복 방지)
+  last_wake_triggered  TEXT,   -- 기상 루틴 마지막 실행 (중복 방지)
+  updated_at           TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id)
+);
+
 -- ── 일일 수면 리포트 ───────────────────────────────────────────────────────────
 -- 1일 1행. Fitbit 수면 + 조명 루틴 + 조도 집계를 연결하는 뷰 역할.
 -- 조명 루틴 실행 여부가 수면 효율에 미치는 영향 분석에 활용.

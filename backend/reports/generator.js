@@ -5,7 +5,7 @@
 //  - avg_illuminance_bedtime : 수면 시작 30분 전 ~ 수면 시작 시각
 //  - avg_illuminance_wakeup  : 수면 종료 15분 전 ~ 수면 종료 15분 후
 
-const { getDb } = require('../db/db');
+const { getDbAsync, persist } = require('../db/db');
 
 function avgIlluminance(db, startIso, endIso) {
   const row = db.prepare(`
@@ -23,8 +23,8 @@ function shiftMs(isoStr, deltaMs) {
 }
 
 // date: 'YYYY-MM-DD'
-function generateReport(userId, date) {
-  const db = getDb();
+async function generateReport(userId, date) {
+  const db = await getDbAsync();
 
   const session = db.prepare(`
     SELECT * FROM sleep_sessions
@@ -79,7 +79,7 @@ function generateReport(userId, date) {
       avg_illuminance_bedtime = excluded.avg_illuminance_bedtime,
       avg_illuminance_wakeup  = excluded.avg_illuminance_wakeup,
       generated_at            = datetime('now')
-  `).run(
+  `  ).run(
     userId,
     date,
     session?.id ?? null,
@@ -88,6 +88,8 @@ function generateReport(userId, date) {
     avgBedtime,
     avgWakeup,
   );
+
+  persist();
 
   console.log(
     `[REPORT] ${date} 리포트 생성 완료` +

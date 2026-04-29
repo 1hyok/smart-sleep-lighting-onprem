@@ -2,7 +2,7 @@
 // 토큰 만료 5분 전 자동 갱신, 401 응답 시 1회 강제 갱신 후 재시도.
 
 const config = require('../config');
-const { getDb } = require('../db/db');
+const { getDbAsync, persist } = require('../db/db');
 
 const BASE_URL = 'https://api.fitbit.com';
 const TOKEN_URL = 'https://api.fitbit.com/oauth2/token';
@@ -14,7 +14,7 @@ function basicAuth() {
 }
 
 async function doRefresh(userId) {
-  const db = getDb();
+  const db = await getDbAsync();
   const row = db
     .prepare('SELECT refresh_token FROM fitbit_tokens WHERE user_id = ?')
     .get(userId);
@@ -49,18 +49,18 @@ async function doRefresh(userId) {
     WHERE user_id = ?
   `).run(data.access_token, data.refresh_token, expiresAt, userId);
 
+  persist();
   console.log(`[FITBIT] 액세스 토큰 갱신 완료 (user_id=${userId})`);
   return data.access_token;
 }
 
 async function getToken(userId) {
-  const db = getDb();
+  const db = await getDbAsync();
   const row = db
     .prepare('SELECT access_token, expires_at FROM fitbit_tokens WHERE user_id = ?')
     .get(userId);
   if (!row) throw new Error(`userId=${userId} 의 Fitbit 토큰이 없습니다`);
 
-  // 만료 5분 전이면 선제적으로 갱신
   if (Date.now() >= new Date(row.expires_at).getTime() - 5 * 60 * 1000) {
     return doRefresh(userId);
   }
@@ -73,7 +73,6 @@ async function fitbitGet(userId, apiPath) {
     headers: { Authorization: `Bearer ${token}` },
   });
 
-  // 401이면 강제 갱신 후 1회 재시도
   if (res.status === 401) {
     const newToken = await doRefresh(userId);
     const retry = await fetch(`${BASE_URL}${apiPath}`, {
@@ -87,7 +86,6 @@ async function fitbitGet(userId, apiPath) {
   return res.json();
 }
 
-// date: 'YYYY-MM-DD'
 async function getSleepByDate(userId, date) {
   return fitbitGet(userId, `/1.2/user/-/sleep/date/${date}.json`);
 }

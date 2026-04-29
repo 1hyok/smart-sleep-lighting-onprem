@@ -87,6 +87,12 @@ function saveUserAndTokens(tokenData, profile) {
   );
 
   console.log(`[AUTH] 저장 완료 — 사용자: ${displayName} (${fitbitUserId})`);
+
+  try {
+    require('../services/activeUser').invalidatePrimaryUserIdCache();
+  } catch {
+    /* auth 단독 실행 시 순환 참조 등 무시 */
+  }
 }
 
 function run() {

@@ -1,0 +1,18 @@
+백엔드 수동 검증 시나리오 (HANDOVER §8 시간대·연동)
+
+1. Fitbit 로컬 시각 vs 조도 UTC
+   - 수면 리포트 생성 후 sleep_reports.avg_* 와 illuminance_readings.recorded_at 상관관계를 로그에서 확인
+   - RPi와 Fitbit 모두 NTP 동기화 상태에서 하루 치 데이터만 검증
+
+2. 야간 스케줄 (취침 23:xx / 기상 07:xx)
+   - schedules 저장 후 매분 스케줄러 로그에서 sleep 목표 시각이 미래 절대 시각(ISO)으로 잡히는지 확인
+   - 취침·기상 각각 last_sleep_triggered / last_wake_triggered 가 독립 갱신되는지 확인
+
+3. MQTT 디바이스 상태
+   - mosquitto_pub 로 home/edge/status 발행 후 GET /api/device/status 에 deviceId·status 반영 확인
+
+4. sql.js (Windows Node)
+   - 프로세스 종료 전 illuminance INSERT 후 DB 파일 크기·재오픈 시 행 존재 확인
+
+5. Fitbit 우선 user_id
+   - OAuth 후 fitbit_tokens 가 있는 users.id 가 리포트·폴러와 동일한지 DB에서 user_id 일치 확인

@@ -1,9 +1,9 @@
-// MQTT 구독자: home/sensor/illuminance 수신 → SQLite 저장.
-// source='mock' 인 샘플은 config.pipeline.storeMockSensor=false(기본)이면 무시.
+// MQTT 구독: 조도 → SQLite, 디바이스 상태 → 메모리 맵 (INTEGRATION §4).
 
 const mqtt = require('mqtt');
 const config = require('../config');
-const { getDb } = require('../db/db');
+const { getDbAsync, persist } = require('../db/db');
+const { updateFromPayload } = require('./deviceStatusStore');
 
 const SQL_INSERT = `
   INSERT INTO illuminance_readings (device_id, value, raw, source, recorded_at)
@@ -22,13 +22,16 @@ function start() {
 
   client.on('connect', () => {
     console.log(`[MQTT] 브로커 연결: ${config.mqtt.brokerUrl}`);
-    client.subscribe(config.topics.illuminance, { qos: 1 }, (err) => {
-      if (err) console.error('[MQTT] 구독 실패:', err.message);
-      else console.log(`[MQTT] 구독 시작: ${config.topics.illuminance}`);
-    });
+    const subs = [config.topics.illuminance, config.topics.deviceStatus];
+    for (const topic of subs) {
+      client.subscribe(topic, { qos: 1 }, (err) => {
+        if (err) console.error(`[MQTT] 구독 실패 ${topic}:`, err.message);
+        else console.log(`[MQTT] 구독 시작: ${topic}`);
+      });
+    }
   });
 
-  client.on('message', (_topic, payload) => {
+  client.on('message', (topic, payload) => {
     let msg;
     try {
       msg = JSON.parse(payload.toString());
@@ -37,15 +40,27 @@ function start() {
       return;
     }
 
+    if (topic === config.topics.deviceStatus) {
+      updateFromPayload(msg);
+      return;
+    }
+
+    if (topic !== config.topics.illuminance) return;
+
     if (!config.pipeline.storeMockSensor && msg.source === 'mock') return;
 
-    try {
-      getDb()
-        .prepare(SQL_INSERT)
-        .run(msg.deviceId, msg.value, msg.raw ?? null, msg.source, msg.timestamp);
-    } catch (err) {
-      console.error('[MQTT] DB 저장 실패:', err.message);
-    }
+    getDbAsync()
+      .then((db) => {
+        db.prepare(SQL_INSERT).run(
+          msg.deviceId,
+          msg.value,
+          msg.raw ?? null,
+          msg.source,
+          msg.timestamp,
+        );
+        persist();
+      })
+      .catch((err) => console.error('[MQTT] DB 저장 실패:', err.message));
   });
 
   client.on('error', (err) => console.error('[MQTT] 오류:', err.message));

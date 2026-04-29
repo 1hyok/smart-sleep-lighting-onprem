@@ -3,7 +3,7 @@
 
 const cron = require('node-cron');
 const config = require('../config');
-const { getDb } = require('../db/db');
+const { getDbAsync, persist } = require('../db/db');
 const { getSleepByDate } = require('./client');
 const mockData = require('./mockData');
 const { generateReport } = require('../reports/generator');
@@ -14,8 +14,10 @@ function yesterday() {
   return d.toISOString().slice(0, 10); // YYYY-MM-DD
 }
 
-const insertSession = () =>
-  getDb().prepare(`
+async function persistSleepData(userId, data) {
+  const db = await getDbAsync();
+
+  const stmtSession = db.prepare(`
     INSERT INTO sleep_sessions
       (user_id, fitbit_log_id, date, start_time, end_time, duration_ms,
        minutes_asleep, minutes_awake, time_in_bed, efficiency, is_main_sleep, sleep_type)
@@ -27,8 +29,7 @@ const insertSession = () =>
       fetched_at     = datetime('now')
   `);
 
-const insertStage = () =>
-  getDb().prepare(`
+  const stmtStage = db.prepare(`
     INSERT INTO sleep_stages (session_id, stage, minutes, count, thirty_day_avg_minutes)
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(session_id, stage) DO UPDATE SET
@@ -36,11 +37,6 @@ const insertStage = () =>
       count                  = excluded.count,
       thirty_day_avg_minutes = excluded.thirty_day_avg_minutes
   `);
-
-function persistSleepData(userId, data) {
-  const db = getDb();
-  const stmtSession = insertSession();
-  const stmtStage   = insertStage();
 
   const sync = db.transaction(() => {
     for (const s of data.sleep) {
@@ -77,6 +73,7 @@ function persistSleepData(userId, data) {
   });
 
   sync();
+  persist();
 }
 
 async function syncDate(userId, date) {
@@ -95,11 +92,12 @@ async function syncDate(userId, date) {
     return;
   }
 
-  persistSleepData(userId, data);
+  await persistSleepData(userId, data);
   console.log(`[FITBIT] ${date} 동기화 완료 (${data.sleep.length}건)`);
 
   // 수면 데이터 저장 직후 일일 리포트 생성
-  generateReport(userId, date);
+  await generateReport(userId, date);
+  persist();
 }
 
 async function runDailySync(userId) {
