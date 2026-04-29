@@ -11,7 +11,9 @@
   "scripts": {
     "start": "node index.js",
     "dev": "MOCK_FITBIT=true STORE_MOCK_SENSOR=true bun run index.js",
-    "auth": "node fitbit/auth.js"
+    "auth": "node fitbit/auth.js",
+    "seed": "node scripts/seed-dev-data.js",
+    "seed:reset": "node scripts/seed-dev-data.js --reset"
   },
   "dependencies": {
     "cors": "^2.8.5",
