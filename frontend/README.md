@@ -36,11 +36,22 @@ npm run dev
 
 기본적으로 `http://localhost:5173` 에서 열립니다.
 
+> 백엔드가 비어있어 화면이 비어 보일 땐 `backend/`에서 `npm run seed`를 실행하면
+> 14일치 가짜 수면/조도 데이터가 들어갑니다 (`backend/scripts/seed-dev-data.js`).
+
+## 검증
+
+```bash
+npm run lint    # ESLint
+npm run build   # 프로덕션 빌드 (dist/)
+npm run preview # 빌드 산출물 로컬 미리보기
+```
+
 ## 환경변수
 
 | 키 | 기본값 | 설명 |
 |---|---|---|
-| `VITE_API_BASE_URL` | `http://localhost:3000` | 백엔드 REST API 주소 |
+| `VITE_API_BASE_URL` | `http://localhost:3001` | 백엔드 REST API 주소 |
 
 ## 백엔드 연동 엔드포인트
 
