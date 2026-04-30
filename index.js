@@ -1,17 +1,19 @@
 // ──────────────────────────────────────────────
 // index.js
 //  - 엣지 노드 진입점.
-//  - 단일 책임:
-//     YL-40(PCF8591) 조도 센서 값 수집
-//     → sensor.js 내부 노이즈 필터링 (burst median + 이동 평균)
-//     → MQTT 브로커(Mosquitto) 의 home/sensor/illuminance 토픽으로 Publish
-//  - 비즈니스 로직(루틴/조명 제어/추천/스케줄링)은 백엔드 책임이며
-//    이 노드에는 포함되지 않음.
+//  - 책임:
+//     [Publish] YL-40(PCF8591) 조도 센서 → 노이즈 필터링 → MQTT 발행
+//               (home/sensor/illuminance, home/edge/status[LWT])
+//     [Subscribe] 백엔드 조명 제어 명령(home/edge/light/command) 수신 →
+//                 lightController 로 GPIO PWM 페이드 제어
+//  - 비즈니스 로직(수면 루틴 판단/스케줄 산출/Fitbit 연동/추천)은 백엔드 책임.
+//    엣지는 "센서값 수집" + "백엔드가 시키는 대로 조명 제어" 두 액션만.
 // ──────────────────────────────────────────────
 
 const config = require('./config');
 const mqttClient = require('./mqttClient');
 const sensor = require('./sensor');
+const lightController = require('./lightController');
 const eventLogger = require('./eventLogger');
 const buildLogger = require('./logger');
 
@@ -54,12 +56,48 @@ function publishSensorReading() {
   }
 }
 
+/**
+ * 백엔드 조명 제어 명령 수신 핸들러.
+ *  - 페이로드 스키마:
+ *      level     number  0..100, 목표 밝기 %
+ *      durationMs number? 페이드 소요시간(ms). 생략/0 이면 즉시 점프
+ *  - 페이드 인터벌의 누적/중첩은 lightController 가 책임 (이전 인터벌 취소).
+ *  - 잘못된 페이로드는 드랍 + 이벤트 로그에 기록 (백엔드 디버깅용).
+ */
+function handleLightCommand(payload) {
+  const { level, durationMs = 0 } = payload || {};
+  const validLevel =
+    typeof level === 'number' &&
+    Number.isFinite(level) &&
+    level >= 0 &&
+    level <= 100;
+
+  if (!validLevel) {
+    log.warn(`유효하지 않은 light_command 페이로드: ${JSON.stringify(payload)}`);
+    eventLogger.append({ type: 'light_command_invalid', payload });
+    return;
+  }
+
+  const safeDuration =
+    Number.isFinite(durationMs) && durationMs >= 0 ? Number(durationMs) : 0;
+
+  log.info(`조명 제어 수신: level=${level}%, durationMs=${safeDuration}`);
+  eventLogger.append({ type: 'light_command', level, durationMs: safeDuration });
+  lightController.setBrightness(level, safeDuration);
+}
+
 function bootstrap() {
-  log.info('── 스마트 수면 조명 엣지 노드 기동 (조도 센서) ──');
-  log.info(`모드: ${config.sensor.mock ? 'MOCK (I2C 비활성)' : 'RPI (I2C 활성)'}`);
+  log.info('── 스마트 수면 조명 엣지 노드 기동 ──');
+  log.info(`센서 모드: ${config.sensor.mock ? 'MOCK (I2C 비활성)' : 'RPI (I2C 활성)'}`);
+  log.info(`조명 모드: ${config.light.mock ? 'MOCK (GPIO 비활성)' : `RPI (GPIO=${config.light.pin})`}`);
   log.info(`이벤트 로그 파일: ${eventLogger.getPath()}`);
 
   eventLogger.append({ type: 'service_start', clientId: config.mqtt.clientId });
+
+  // 조명 명령 토픽 구독 등록.
+  //  - mqttClient.subscribe 는 connect 전 호출되어도 OK (연결 시점에 일괄 등록).
+  //    재연결 시에도 자동 재구독되므로 여기서 단 1회만 호출.
+  mqttClient.subscribe(config.topics.lightCommand, handleLightCommand);
 
   const client = mqttClient.connect();
 
@@ -88,6 +126,7 @@ async function shutdown(signal, exitCode = 0) {
     if (publishTimer) clearInterval(publishTimer);
     await mqttClient.disconnect();
     sensor.cleanup();
+    lightController.cleanup();
   } catch (err) {
     log.error('shutdown 중 오류:', err.message);
   } finally {

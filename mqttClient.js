@@ -1,12 +1,13 @@
 // ──────────────────────────────────────────────
 // mqttClient.js
-//  - mqtt.js 기반 브로커 발행 전용 래퍼.
-//  - 엣지 노드의 단일 책임(센서 → MQTT 발행)에 맞춰 구독/큐잉 로직은 제거.
+//  - mqtt.js 기반 브로커 통신 래퍼 (publish + subscribe).
 //  - 책임:
 //     · 브로커 연결 + 재연결(지수 백오프)
 //     · LWT(Last Will & Testament) 등록 → 비정상 종료도 retain offline 발행
 //     · 정상 접속/종료 시 retain online/offline 상태 발행
 //     · publish() — 미연결 시에는 드랍 (센서값은 휘발성 데이터)
+//     · subscribe(topic, handler) — 토픽-핸들러 라우팅. 단일 message 디스패처
+//       하나만 등록해 핸들러 중복/누수 차단. clean=true 라 재연결마다 자동 재구독.
 // ──────────────────────────────────────────────
 
 const mqtt = require('mqtt');
@@ -15,6 +16,12 @@ const buildLogger = require('./logger');
 const log = buildLogger('mqtt');
 
 let client = null;
+
+// 토픽 → 핸들러 라우팅 맵.
+//  - client.on('message') 를 토픽마다 등록하면 매 재연결/재구독마다 리스너가
+//    누적되는 메모리 누수 + 중복 호출이 발생. 디스패처는 connect() 시점에
+//    단 한 번만 등록하고, 이 맵으로 토픽을 라우팅.
+const subscriptions = new Map();
 
 // 재연결 지수 백오프
 //  - 브로커 영구 단절 시 고정 2초 재시도가 로그/네트워크/CPU 자원을 고갈시킴.
@@ -80,6 +87,10 @@ function connect() {
     },
   });
 
+  // 단일 message 디스패처 — connect() 호출 1회당 1번만 등록되므로 누수 X.
+  // 토픽별 라우팅은 subscriptions Map 으로 위임.
+  client.on('message', dispatchMessage);
+
   client.on('connect', () => {
     if (reconnectAttempts > 0) {
       log.info(`브로커 연결 성공 (재연결 ${reconnectAttempts}회 시도 후)`);
@@ -100,6 +111,10 @@ function connect() {
         else log.info(`device status → online [${config.topics.deviceStatus}]`);
       },
     );
+
+    // clean=true 정책상 재연결 시 브로커 측 구독 상태가 휘발 →
+    // subscriptions 맵의 모든 토픽을 일괄 재등록.
+    resubscribeAll();
   });
 
   // 재연결 시도 중 — 지수 백오프 적용.
@@ -148,6 +163,81 @@ function publish(topic, message, options = { qos: 0, retain: false }) {
 }
 
 /**
+ * 토픽 구독 + 핸들러 매핑.
+ *  - connect() 이전/이후 어느 시점에 호출해도 OK.
+ *    · 미연결 상태면 subscriptions 맵에 저장만 → connect 시 일괄 등록
+ *    · 연결 상태면 즉시 브로커에 SUBSCRIBE 패킷 전송
+ *  - 동일 토픽 재호출 시 핸들러를 교체 (브로커 재구독은 불필요 — 같은 토픽).
+ *  - clean=true 정책상 재연결 시 자동 재구독 (resubscribeAll).
+ *
+ * @param {string} topic
+ * @param {(payload:any, topic:string) => void} handler  파싱된 JSON 페이로드 수신
+ */
+function subscribe(topic, handler) {
+  if (typeof handler !== 'function') {
+    throw new TypeError(`subscribe(${topic}): handler 가 함수가 아닙니다`);
+  }
+  const replacing = subscriptions.has(topic);
+  subscriptions.set(topic, handler);
+
+  if (replacing) {
+    log.warn(`이미 구독 중인 토픽 — 핸들러 교체: ${topic}`);
+    return; // 브로커 측 구독은 그대로, 라우팅 맵만 갱신
+  }
+
+  if (client && client.connected) {
+    client.subscribe(topic, { qos: 1 }, (err, granted) => {
+      if (err) log.error(`구독 실패 [${topic}]: ${err.message}`);
+      else log.info(`구독 등록 [${topic}] (qos=${granted?.[0]?.qos ?? '?'})`);
+    });
+  } else {
+    log.info(`구독 예약 [${topic}] — connect 시점에 일괄 등록`);
+  }
+}
+
+/**
+ * 단일 message 디스패처. 토픽 → 등록된 핸들러로 위임.
+ *  - JSON 파싱은 여기서 일괄 처리해 각 핸들러는 객체로 받음.
+ *  - 핸들러가 throw 해도 mqtt.js 내부 루프가 죽지 않도록 격리.
+ */
+function dispatchMessage(topic, payloadBuf) {
+  const handler = subscriptions.get(topic);
+  if (!handler) {
+    log.warn(`핸들러 미등록 토픽 메시지 무시: ${topic}`);
+    return;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(payloadBuf.toString());
+  } catch (err) {
+    log.error(`payload JSON 파싱 실패 [${topic}]: ${err.message}`);
+    return;
+  }
+
+  // sync/async 핸들러 모두 안전하게 격리.
+  Promise.resolve()
+    .then(() => handler(payload, topic))
+    .catch((err) =>
+      log.error(`핸들러 처리 중 예외 [${topic}]: ${err.message}`),
+    );
+}
+
+/**
+ * subscriptions 맵의 모든 토픽을 브로커에 재등록.
+ *  - clean=true 라 재연결마다 호출되어야 함. connect 핸들러에서 트리거.
+ */
+function resubscribeAll() {
+  if (!client || subscriptions.size === 0) return;
+  for (const topic of subscriptions.keys()) {
+    client.subscribe(topic, { qos: 1 }, (err, granted) => {
+      if (err) log.error(`재구독 실패 [${topic}]: ${err.message}`);
+      else log.info(`재구독 [${topic}] (qos=${granted?.[0]?.qos ?? '?'})`);
+    });
+  }
+}
+
+/**
  * 브로커 연결을 정상 종료합니다.
  *  - LWT 와 별개로 "graceful" offline 상태를 명시적으로 retain 갱신.
  *    LWT 는 keepalive 깨짐을 기다려야 하지만 이건 즉시.
@@ -182,5 +272,6 @@ function disconnect() {
 module.exports = {
   connect,
   publish,
+  subscribe,
   disconnect,
 };

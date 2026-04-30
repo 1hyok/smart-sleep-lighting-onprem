@@ -25,6 +25,10 @@ const config = {
     // 발행하므로 구독자(백엔드)는 어느 시점에 붙어도 엣지 가용 여부를
     // 즉시 1건 read 로 파악 가능.
     deviceStatus: process.env.TOPIC_DEVICE_STATUS || 'home/edge/status',
+    // 백엔드 → 엣지 조명 제어 명령 (Subscribe).
+    //  - 페이로드: { level: 0..100, durationMs?: number }
+    //  - lightController.setBrightness 로 라우팅.
+    lightCommand: process.env.TOPIC_LIGHT_COMMAND || 'home/edge/light/command',
   },
 
   sensor: {
@@ -42,6 +46,17 @@ const config = {
 
     // PC 개발 환경에서 실제 I2C 가 없을 때 mock 데이터로 폴백.
     mock: String(process.env.MOCK_SENSOR).toLowerCase() === 'true',
+  },
+
+  light: {
+    // RPi 하드웨어 PWM 가능 핀: BCM 12, 13, 18, 19. 그 외도 소프트웨어 PWM 가능
+    // 하지만 페이드의 부드러움/지터는 하드웨어 PWM 이 우월.
+    pin: Number(process.env.LIGHT_GPIO_PIN) || 18,
+
+    // PC 개발 환경 / pigpio 미설치 시 mock 으로 폴백 (sensor.js 와 동일 패턴).
+    //  - mock 모드에서는 GPIO write 대신 듀티값을 로그로만 출력 → 페이드 동작
+    //    검증은 가능하나 실제 LED 는 켜지지 않음.
+    mock: String(process.env.MOCK_LIGHT).toLowerCase() === 'true',
   },
 
   eventLog: {
