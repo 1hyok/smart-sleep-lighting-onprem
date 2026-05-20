@@ -47,16 +47,30 @@ function start() {
 
     if (topic !== config.topics.illuminance) return;
 
-    if (!config.pipeline.storeMockSensor && msg.source === 'mock') return;
+    // 페이로드 정규화: 엣지 노드(Pi)는 {illuminance, action, timestamp} 형태로 발행할 수 있음.
+    const value = msg.value ?? msg.illuminance;
+    const deviceId = msg.deviceId ?? msg.device_id ?? 'rpi-edge';
+    const source = msg.source ?? 'sensor';
+    const recordedAt = msg.timestamp ?? new Date().toISOString();
+
+    if (typeof value !== 'number') {
+      console.warn(`[MQTT] ${topic}: 조도 값 누락 — payload=${JSON.stringify(msg)}`);
+      return;
+    }
+
+    if (!config.pipeline.storeMockSensor && source === 'mock') return;
+
+    const action = msg.action ? `  action=${msg.action}` : '';
+    console.log(`[MQTT ${topic}] illuminance=${value} lux  device=${deviceId}${action}  @${recordedAt}`);
 
     getDbAsync()
       .then((db) => {
         db.prepare(SQL_INSERT).run(
-          msg.deviceId,
-          msg.value,
+          deviceId,
+          value,
           msg.raw ?? null,
-          msg.source,
-          msg.timestamp,
+          source,
+          recordedAt,
         );
         persist();
       })
