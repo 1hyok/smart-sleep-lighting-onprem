@@ -32,22 +32,22 @@ function wrapSqlJs(sqlJsDb) {
         getAsObject() { return stmt.getAsObject(); },
         get(...args) {
           if (args.length) stmt.bind(args);
-          stmt.step();
-          const row = stmt.getAsObject();
-          stmt.free();
+          const hasRow = stmt.step();
+          const row = hasRow ? stmt.getAsObject() : undefined;
+          stmt.reset();
           return row;
         },
         all(...args) {
           if (args.length) stmt.bind(args);
           const rows = [];
           while (stmt.step()) rows.push(stmt.getAsObject());
-          stmt.free();
+          stmt.reset();
           return rows;
         },
         run(...args) {
           if (args.length) stmt.bind(args);
           stmt.step();
-          stmt.free();
+          stmt.reset();
           const changes = sqlJsDb.getRowsModified();
           let lastInsertRowid = 0;
           try {
