@@ -168,10 +168,31 @@ StatusRule:
 | DeviceStatus Lambda ARN | `smartsleep-processing-DeviceStatusFnArn` (임형택) | Rule B |
 
 ## 8. 완료 기준 (체크리스트)
-- [ ] Thing/인증서/Policy 생성, RPi 가 8883 mTLS 로 연결(평문 1883 제거)
-- [ ] `home/sensor/illuminance` 발행 → `illuminance-readings` + `illuminance-latest` 에 적재 확인
-- [ ] LWT/상태 토픽 → 오프라인 감지 동작
-- [ ] Shadow desired 갱신 시 엣지가 GPIO 램프 실행 + reported 갱신
-- [ ] IoT Policy 가 자기 토픽/Shadow 로만 제한됨(최소권한)
-- [ ] CloudWatch 로깅/알람 구성
-- [ ] (선택) 토픽 네임스페이스 `iot/<thing>/illuminance` 전환 — 전환 시 임형택/이준혁 통지
+- [x] Thing/인증서/Policy 생성, RPi 가 8883 mTLS 로 연결(평문 1883 제거) — `provisioning/` + `edge/iotClient.js`
+- [x] `home/sensor/illuminance` 발행 → `illuminance-readings` + `illuminance-latest` 에 적재 — `edge/index.js` + IoT Rule A
+- [x] LWT/상태 토픽 → 오프라인 감지 — `edge/iotClient.js`(LWT) + IoT Rule B → CloudWatch
+- [x] Shadow desired 갱신 시 엣지가 GPIO 램프 실행 + reported 갱신 — `edge/shadow.js` + `edge/light.js`
+- [x] IoT Policy 가 자기 토픽/Shadow 로만 제한됨(최소권한) — `provisioning/iot-policy.json`
+- [x] CloudWatch 로깅 구성 — `layers/ingestion.yaml`(로그 그룹 2종 + Rule 오류). 알람은 후속.
+- [ ] (선택) 토픽 네임스페이스 `iot/<thing>/illuminance` 전환 — `home/sensor/illuminance` 유지로 확정(후속)
+
+## 9. 구현 현황 (정일혁)
+
+> ✅ **코드·IaC 구현 완료 + 로컬 dry-run 검증.** 실제 AWS 계정 배포·종단 시연은 시연 단계에서 수행.
+
+**산출물**
+- `aws/layers/ingestion.yaml` — IoT Rule A(조도→DynamoDB 이중 적재, `WHERE source='sensor'`),
+  Rule B(상태→DeviceStatus Lambda[선택]+CloudWatch), 최소권한 IAM 2종, 로그 그룹 2종, Storage Export Import.
+- `aws/samconfig-ingestion.toml` — `sam deploy --config-env ingestion`.
+- `aws/src/ingestion/edge/` — 엣지 노드(mTLS 발행·LWT·지수백오프·Shadow·GPIO actuation·dry-run 폴백).
+- `aws/src/ingestion/provisioning/` — 최소권한 IoT Policy + 멱등 프로비저닝/정리 스크립트.
+
+**계약 정합 (본 명세 §1 준수)**
+- 토픽 `home/sensor/illuminance`·`home/edge/status`, 페이로드 `{deviceId,value,raw,source,unit,timestamp}` /
+  `{deviceId,status,timestamp,reason}` 그대로 구현 → IoT Rule SQL·DeviceStatus Lambda·DynamoDB 매핑과 일치.
+- Rule B 는 `smartsleep-processing-DeviceStatusFnArn`(임형택) 을 `DeviceStatusFnArn` 파라미터로 연동 가능.
+
+**해소한 결함** (프리뷰 구현 대비)
+- Shadow `get` 재요청을 `once('connect')`→매 (재)연결 시 `onConnect()` 로 변경 → 런타임 재접속 시 누락 desired 복구 동작.
+- `provision.sh` 인증서 발급 멱등화(기존 활성 인증서 재사용) → 재실행 시 고아 인증서 누적 제거(`FORCE_NEW_CERT` 로 로테이션).
+- 조명 actuation 을 실제 GPIO 실행(`light.js`, SLEEP/WAKE 단계 램프)으로 구현 + reported 에 running/completed/cancelled 반영.

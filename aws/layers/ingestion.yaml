@@ -1,0 +1,195 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Ingestion Layer — AWS IoT Core 라우팅/모니터링  (담당: 정일혁)
+#  보고서 §2.1(RPi → AWS IoT Core) · §6(디바이스 IAM · 통신보안 · 모니터링)
+#  명세: aws/docs/spec-ingestion-iot.md
+#
+#  이 스택은 엣지(라즈베리파이)가 발행한 메시지를 클라우드로 라우팅한다.
+#   · Rule A: home/sensor/illuminance → DynamoDB 직접 쓰기(Lambda 우회, 비용↓)
+#             illuminance-readings(이력) + illuminance-latest(최신값) 이중 적재
+#   · Rule B: home/edge/status → DeviceStatus Lambda(임형택, 선택) + CloudWatch 모니터링
+#  Storage Stack(template.yaml)의 Export 를 Fn::ImportValue 로 참조한다.
+#
+#  선행: smartsleep-storage 스택 배포 (illuminance 테이블 Export 필요)
+#  선택: smartsleep-processing 스택의 DeviceStatusFnArn (Rule B Lambda 연동 시)
+#  배포:  cd aws && sam deploy --config-env ingestion
+#  검증:  sam validate --lint -t layers/ingestion.yaml
+#
+#  ⚠️ 엣지 디바이스(Thing/인증서/IoT Policy) 자체는 디바이스별 자격증명이라
+#     CloudFormation 이 아닌 src/ingestion/provisioning/provision.sh 로 발급한다.
+# ──────────────────────────────────────────────────────────────────────────────
+
+Description: >
+  Smart Sleep Lighting — Ingestion Layer (AWS IoT Core Rules + monitoring).
+  Routes edge telemetry to DynamoDB and device status to Lambda/CloudWatch.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: smartsleep
+    AllowedPattern: '^[a-z][a-z0-9-]{1,20}$'
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+  StorageStackName:
+    Type: String
+    Default: smartsleep-storage
+    Description: Storage 스택명 (illuminance 테이블 Export 접두사)
+  IlluminanceTopic:
+    Type: String
+    Default: home/sensor/illuminance
+    Description: 엣지 조도 발행 토픽 (spec §1 계약 — 엣지/백엔드와 동기 유지)
+  StatusTopic:
+    Type: String
+    Default: home/edge/status
+    Description: 엣지 디바이스 상태 토픽 (LWT)
+  DeviceStatusFnArn:
+    Type: String
+    Default: ''
+    Description: >
+      (선택) 임형택 Processing 스택의 DeviceStatus Lambda ARN.
+      값을 주면 Rule B 가 이 Lambda 를 호출(+CloudWatch), 비우면 CloudWatch 로깅만.
+      조회: aws cloudformation describe-stacks --stack-name smartsleep-processing
+            --query "Stacks[0].Outputs[?OutputKey=='DeviceStatusFnArn'].OutputValue" --output text
+
+Conditions:
+  WireDeviceStatusLambda: !Not [!Equals [!Ref DeviceStatusFnArn, '']]
+
+Resources:
+
+  # ── CloudWatch 로그 그룹 (모니터링·오프라인 감지·Rule 오류) ───────────────────
+  IngestErrorLog:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${ProjectName}/${Environment}/iot/ingest-errors'
+      RetentionInDays: 14
+
+  StatusLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${ProjectName}/${Environment}/iot/device-status'
+      RetentionInDays: 14
+
+  # ── IAM: IoT Rule → DynamoDB 직접 쓰기 (최소권한: PutItem, 두 테이블만) ───────
+  IotToDynamoRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: iot.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: put-illuminance
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:PutItem
+                Resource:
+                  - !ImportValue
+                    Fn::Sub: '${StorageStackName}-IlluminanceReadingsTableArn'
+                  - !ImportValue
+                    Fn::Sub: '${StorageStackName}-IlluminanceLatestTableArn'
+
+  # ── IAM: IoT Rule → CloudWatch Logs (최소권한: 프로젝트 iot 로그 그룹) ─────────
+  IotToCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: iot.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: write-iot-logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:DescribeLogStreams, logs:PutLogEvents]
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/${ProjectName}/${Environment}/iot/*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/${ProjectName}/${Environment}/iot/*:*'
+
+  # ── Rule A: 조도 → DynamoDB 직접 쓰기 (이력 + 최신값 이중 적재) ───────────────
+  #   device_id(PK)·recorded_at(SK)·ttl(epoch+30d)·value/source/raw 자동 매핑.
+  #   WHERE source='sensor' 로 mock 표본은 적재 제외(보고서 §4.4).
+  IlluminanceRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: !Sub 'smartsleep_${Environment}_illuminance_to_ddb'
+      TopicRulePayload:
+        AwsIotSqlVersion: '2016-03-23'
+        RuleDisabled: false
+        Sql: !Sub >-
+          SELECT deviceId AS device_id, timestamp AS recorded_at, value, source, raw,
+                 (floor(timestamp() / 1000) + 2592000) AS ttl
+          FROM '${IlluminanceTopic}' WHERE source = 'sensor'
+        Actions:
+          - DynamoDBv2:
+              RoleArn: !GetAtt IotToDynamoRole.Arn
+              PutItem:
+                TableName: !ImportValue
+                  Fn::Sub: '${StorageStackName}-IlluminanceReadingsTableName'
+          - DynamoDBv2:
+              RoleArn: !GetAtt IotToDynamoRole.Arn
+              PutItem:
+                TableName: !ImportValue
+                  Fn::Sub: '${StorageStackName}-IlluminanceLatestTableName'
+        ErrorAction:
+          CloudwatchLogs:
+            LogGroupName: !Ref IngestErrorLog
+            RoleArn: !GetAtt IotToCloudWatchRole.Arn
+
+  # ── Rule B: 디바이스 상태 → DeviceStatus Lambda(선택) + CloudWatch 모니터링 ───
+  StatusRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: !Sub 'smartsleep_${Environment}_device_status'
+      TopicRulePayload:
+        AwsIotSqlVersion: '2016-03-23'
+        RuleDisabled: false
+        Sql: !Sub "SELECT * FROM '${StatusTopic}'"
+        Actions: !If
+          - WireDeviceStatusLambda
+          - - Lambda:
+                FunctionArn: !Ref DeviceStatusFnArn
+            - CloudwatchLogs:
+                LogGroupName: !Ref StatusLogGroup
+                RoleArn: !GetAtt IotToCloudWatchRole.Arn
+          - - CloudwatchLogs:
+                LogGroupName: !Ref StatusLogGroup
+                RoleArn: !GetAtt IotToCloudWatchRole.Arn
+        ErrorAction:
+          CloudwatchLogs:
+            LogGroupName: !Ref IngestErrorLog
+            RoleArn: !GetAtt IotToCloudWatchRole.Arn
+
+  # IoT 가 DeviceStatus Lambda 를 호출하도록 허용 (Lambda 연동 시에만).
+  StatusRuleLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Condition: WireDeviceStatusLambda
+    Properties:
+      FunctionName: !Ref DeviceStatusFnArn
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceArn: !GetAtt StatusRule.Arn
+
+Outputs:
+  IlluminanceRuleName:
+    Value: !Ref IlluminanceRule
+    Export: { Name: !Sub '${AWS::StackName}-IlluminanceRuleName' }
+  StatusRuleName:
+    Value: !Ref StatusRule
+    Export: { Name: !Sub '${AWS::StackName}-StatusRuleName' }
+  IngestErrorLogName:
+    Value: !Ref IngestErrorLog
+    Export: { Name: !Sub '${AWS::StackName}-IngestErrorLogName' }
+  StatusLogGroupName:
+    Value: !Ref StatusLogGroup
+    Export: { Name: !Sub '${AWS::StackName}-StatusLogGroupName' }

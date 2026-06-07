@@ -1,0 +1,32 @@
+# SAM 배포 설정 — Ingestion Layer (담당: 정일혁)
+# 사용: cd aws && sam deploy --config-env ingestion
+# 선행: smartsleep-storage 스택 배포(illuminance 테이블 Export 필요)
+# 선택: DeviceStatusFnArn 에 Processing 스택의 DeviceStatus Lambda ARN 지정 시
+#       home/edge/status 가 그 Lambda 로도 라우팅됨(미지정 시 CloudWatch 로깅만).
+version = 0.1
+
+[ingestion.global.parameters]
+stack_name = "smartsleep-ingestion"
+
+[ingestion.validate.parameters]
+lint = true
+
+[ingestion.deploy.parameters]
+stack_name = "smartsleep-ingestion"
+resolve_s3 = true
+s3_prefix = "smartsleep-ingestion"
+region = "ap-northeast-2"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+template_file = "layers/ingestion.yaml"
+parameter_overrides = "ProjectName=smartsleep Environment=dev StorageStackName=smartsleep-storage IlluminanceTopic=home/sensor/illuminance StatusTopic=home/edge/status DeviceStatusFnArn="
+tags = "Project=smartsleep Layer=ingestion Owner=jeongilhyeok"
+
+[ingestion-prod.deploy.parameters]
+stack_name = "smartsleep-ingestion-prod"
+resolve_s3 = true
+region = "ap-northeast-2"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+template_file = "layers/ingestion.yaml"
+parameter_overrides = "ProjectName=smartsleep Environment=prod StorageStackName=smartsleep-storage-prod IlluminanceTopic=home/sensor/illuminance StatusTopic=home/edge/status DeviceStatusFnArn="
