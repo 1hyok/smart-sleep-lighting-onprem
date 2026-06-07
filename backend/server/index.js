@@ -25,6 +25,7 @@ function createApp() {
   app.use('/api/illuminance', illuminanceRoutes);
   app.use('/api/schedule', scheduleRoutes);
   app.use('/api/fitbit', fitbitRoutes);
+  app.use('/api/device', deviceRoutes);
 
   app.use((req, res) => {
     res.status(404).json({ error: `404 Not Found: ${req.method} ${req.path}` });

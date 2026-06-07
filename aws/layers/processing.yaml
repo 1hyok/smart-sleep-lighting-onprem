@@ -1,0 +1,333 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Processing + Service-API Layer (담당: 임형택)
+#  보고서 §2.2(Fitbit Poller) · §3(Lambda 비즈니스 로직) · §5.1(API Gateway) · §6(Secrets/IAM)
+#
+#  선행: smartsleep-storage 스택 배포 후 ImportValue 사용
+#  배포:  cd aws && sam build -t layers/processing.yaml && sam deploy --config-env processing
+# ──────────────────────────────────────────────────────────────────────────────
+
+Description: >
+  Smart Sleep Lighting — Processing + Service-API Layer.
+  Fitbit Poller, Report Generator, REST API, Scheduler, Device Status.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: smartsleep
+    AllowedPattern: '^[a-z][a-z0-9-]{1,20}$'
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+  StorageStackName:
+    Type: String
+    Default: smartsleep-storage
+    Description: Storage 스택명 (Export 접두사)
+  MockFitbit:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  DefaultDeviceId:
+    Type: String
+    Default: rpi-01
+  DefaultThingName:
+    Type: String
+    Default: rpi-01
+  CorsAllowOrigin:
+    Type: String
+    Default: '*'
+  IotDataEndpoint:
+    Type: String
+    Default: ''
+    Description: AWS IoT Data-ATS 엔드포인트 (예: xxxxx-ats.iot.ap-northeast-2.amazonaws.com). 비우면 Shadow 스킵.
+  FitbitClientId:
+    Type: String
+    Default: ''
+    NoEcho: true
+  FitbitClientSecret:
+    Type: String
+    Default: ''
+    NoEcho: true
+
+Conditions:
+  HasFitbitCredentials: !And
+    - !Not [!Equals [!Ref FitbitClientId, '']]
+    - !Not [!Equals [!Ref FitbitClientSecret, '']]
+  HasIotEndpoint: !Not [!Equals [!Ref IotDataEndpoint, '']]
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Architectures: [x86_64]
+    Timeout: 30
+    MemorySize: 256
+    CodeUri: ../src/processing/
+    Environment:
+      Variables:
+        PROJECT_NAME: !Ref ProjectName
+        ENVIRONMENT: !Ref Environment
+        MOCK_FITBIT: !Ref MockFitbit
+        DEFAULT_DEVICE_ID: !Ref DefaultDeviceId
+        DEFAULT_THING_NAME: !Ref DefaultThingName
+        USER_TZ_OFFSET_HOURS: '9'
+        USERS_TABLE: !ImportValue
+          Fn::Sub: '${StorageStackName}-UsersTableName'
+        TOKENS_META_TABLE: !ImportValue
+          Fn::Sub: '${StorageStackName}-FitbitTokensMetaTableName'
+        SESSIONS_TABLE: !ImportValue
+          Fn::Sub: '${StorageStackName}-SleepSessionsTableName'
+        STAGES_TABLE: !ImportValue
+          Fn::Sub: '${StorageStackName}-SleepStagesTableName'
+        REPORTS_TABLE: !ImportValue
+          Fn::Sub: '${StorageStackName}-SleepReportsTableName'
+        ILLUM_TABLE: !ImportValue
+          Fn::Sub: '${StorageStackName}-IlluminanceReadingsTableName'
+        ILLUM_LATEST_TABLE: !ImportValue
+          Fn::Sub: '${StorageStackName}-IlluminanceLatestTableName'
+        SCHEDULES_TABLE: !ImportValue
+          Fn::Sub: '${StorageStackName}-SchedulesTableName'
+        ROUTINES_TABLE: !ImportValue
+          Fn::Sub: '${StorageStackName}-LightingRoutinesTableName'
+        ROUTINE_STEPS_TABLE: !ImportValue
+          Fn::Sub: '${StorageStackName}-RoutineStepsTableName'
+        DEVICE_STATUS_TABLE: !Ref DeviceStatusTable
+        FITBIT_APP_SECRET_ARN: !Ref FitbitAppSecret
+        IOT_DATA_ENDPOINT: !Ref IotDataEndpoint
+        CORS_ALLOW_ORIGIN: !Ref CorsAllowOrigin
+
+Resources:
+
+  # ── §6 Fitbit 앱 자격증명 (전역 1) ─────────────────────────────────────────
+  FitbitAppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ProjectName}/${Environment}/fitbit/app'
+      Description: Fitbit OAuth client_id + client_secret
+      SecretString: !If
+        - HasFitbitCredentials
+        - !Sub '{"client_id":"${FitbitClientId}","client_secret":"${FitbitClientSecret}"}'
+        - '{"client_id":"","client_secret":""}'
+
+  # ── device-status (Processing 스택 소유) ────────────────────────────────────
+  DeviceStatusTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-device-status'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: device_id, AttributeType: S }
+      KeySchema:
+        - { AttributeName: device_id, KeyType: HASH }
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: Layer, Value: processing }
+        - { Key: Owner, Value: limhyungtaek }
+
+  # ── §2.2 fitbitPoller ───────────────────────────────────────────────────────
+  FitbitPollerFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers/fitbitPoller.handler
+      Description: EventBridge 07:00 KST — Fitbit Sleep API 폴링
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-SleepSessionsTableName'
+        - DynamoDBCrudPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-SleepStagesTableName'
+        - DynamoDBCrudPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-FitbitTokensMetaTableName'
+        - DynamoDBReadPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-UsersTableName'
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref FitbitAppSecret
+        - Statement:
+            - Effect: Allow
+              Action: [secretsmanager:GetSecretValue, secretsmanager:PutSecretValue, secretsmanager:CreateSecret]
+              Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/${Environment}/fitbit/*'
+      Events:
+        DailyPoll:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 22 * * ? *)
+            Name: !Sub '${ProjectName}-${Environment}-fitbit-daily'
+            Description: 매일 07:00 KST (22:00 UTC)
+
+  # ── §3 generateReport (DynamoDB Stream) ─────────────────────────────────────
+  GenerateReportFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers/generateReport.handler
+      Description: sleep-sessions Stream → sleep-reports upsert
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-SleepReportsTableName'
+        - DynamoDBReadPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-SleepSessionsTableName'
+        - DynamoDBReadPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-SleepStagesTableName'
+        - DynamoDBReadPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-IlluminanceReadingsTableName'
+        - DynamoDBReadPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-LightingRoutinesTableName'
+        - DynamoDBStreamReadPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-SleepSessionsTableName'
+      Events:
+        SessionStream:
+          Type: DynamoDB
+          Properties:
+            Stream: !ImportValue
+              Fn::Sub: '${StorageStackName}-SleepSessionsStreamArn'
+            StartingPosition: LATEST
+            BatchSize: 5
+            MaximumRetryAttempts: 2
+
+  # ── §5.1 API Gateway + apiHandler ─────────────────────────────────────────
+  RestApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-api'
+      StageName: !Ref Environment
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: !Sub "'${CorsAllowOrigin}'"
+
+  ApiHandlerFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers/apiHandler.handler
+      Description: REST API 11 endpoints — /api/*
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-SleepReportsTableName'
+        - DynamoDBReadPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-SleepSessionsTableName'
+        - DynamoDBReadPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-FitbitTokensMetaTableName'
+        - DynamoDBCrudPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-SchedulesTableName'
+        - DynamoDBCrudPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-LightingRoutinesTableName'
+        - DynamoDBReadPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-IlluminanceReadingsTableName'
+        - DynamoDBReadPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-IlluminanceLatestTableName'
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DeviceStatusTable
+        - Statement:
+            - Effect: Allow
+              Action: iot:UpdateThingShadow
+              Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/${DefaultThingName}'
+      Events:
+        ProxyApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref RestApi
+            Path: /{proxy+}
+            Method: ANY
+        RootApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref RestApi
+            Path: /
+            Method: ANY
+
+  # ── deviceStatus (정일혁 IoT Rule B Import용 Export) ───────────────────────
+  DeviceStatusFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers/deviceStatus.handler
+      Description: IoT LWT/status → device-status 테이블
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DeviceStatusTable
+
+  # ── §4 schedulerTick (node-cron 대체) ───────────────────────────────────────
+  SchedulerTickFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: handlers/schedulerTick.handler
+      Description: 매분 스케줄 window/dedupe → Shadow 루틴 트리거
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-SchedulesTableName'
+        - DynamoDBCrudPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-SchedulesTableName'
+        - DynamoDBCrudPolicy:
+            TableName: !ImportValue
+              Fn::Sub: '${StorageStackName}-LightingRoutinesTableName'
+        - Statement:
+            - Effect: Allow
+              Action: iot:UpdateThingShadow
+              Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/${DefaultThingName}'
+      Events:
+        EveryMinute:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+            Name: !Sub '${ProjectName}-${Environment}-scheduler-tick'
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway 엔드포인트 (노원우 VITE_API_BASE_URL)
+    Value: !Sub 'https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiUrl'
+
+  ApiHandlerFnArn:
+    Value: !GetAtt ApiHandlerFn.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiHandlerFnArn'
+
+  FitbitPollerFnArn:
+    Value: !GetAtt FitbitPollerFn.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-FitbitPollerFnArn'
+
+  GenerateReportFnArn:
+    Value: !GetAtt GenerateReportFn.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-GenerateReportFnArn'
+
+  DeviceStatusFnArn:
+    Description: 정일혁 IoT Rule B 가 Invoke 할 Lambda ARN
+    Value: !GetAtt DeviceStatusFn.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DeviceStatusFnArn'
+
+  SchedulerTickFnArn:
+    Value: !GetAtt SchedulerTickFn.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-SchedulerTickFnArn'
+
+  FitbitAppSecretArn:
+    Value: !Ref FitbitAppSecret
+    Export:
+      Name: !Sub '${AWS::StackName}-FitbitAppSecretArn'
+
+  DeviceStatusTableName:
+    Value: !Ref DeviceStatusTable
+    Export:
+      Name: !Sub '${AWS::StackName}-DeviceStatusTableName'

@@ -1,0 +1,33 @@
+# SAM 배포 설정 — Processing + Service-API Layer (담당: 임형택)
+# 사용: cd aws && sam build -t layers/processing.yaml && sam deploy --config-env processing
+version = 0.1
+
+[processing.global.parameters]
+stack_name = "smartsleep-processing"
+
+[processing.build.parameters]
+cached = true
+parallel = true
+
+[processing.validate.parameters]
+lint = true
+
+[processing.deploy.parameters]
+stack_name = "smartsleep-processing"
+resolve_s3 = true
+s3_prefix = "smartsleep-processing"
+region = "ap-northeast-2"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+template_file = "layers/processing.yaml"
+parameter_overrides = "ProjectName=smartsleep Environment=dev StorageStackName=smartsleep-storage MockFitbit=false DefaultDeviceId=rpi-01 DefaultThingName=rpi-01 CorsAllowOrigin=*"
+tags = "Project=smartsleep Layer=processing Owner=limhyungtaek"
+
+[processing-prod.deploy.parameters]
+stack_name = "smartsleep-processing-prod"
+resolve_s3 = true
+region = "ap-northeast-2"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+template_file = "layers/processing.yaml"
+parameter_overrides = "ProjectName=smartsleep Environment=prod StorageStackName=smartsleep-storage-prod MockFitbit=false"

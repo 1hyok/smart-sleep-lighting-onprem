@@ -9,7 +9,10 @@ AWS 서버리스 구조로 옮기는 **AWS SAM** 프로젝트입니다. 4-Layer 
 ```
 aws/
 ├── template.yaml                 ★ Storage+Foundation 스택 (이준혁) — DynamoDB 10개 테이블
-├── samconfig.toml                  SAM 배포 설정 (region=ap-northeast-2)
+├── layers/processing.yaml        ★ Processing+API 스택 (임형택) — Lambda·API GW·EventBridge
+├── src/processing/               ★ Lambda 소스 (임형택)
+├── samconfig.toml                  Storage SAM 배포 설정
+├── samconfig-processing.toml       Processing SAM 배포 설정
 ├── HANDOVER-cloud.md               통합 인수인계서 (배포 순서·의존성·소유권) ← 먼저 읽기
 ├── migration/
 │   ├── sqlite-to-dynamodb.js     ★ SQLite → DynamoDB 이전 (이준혁)
@@ -19,7 +22,7 @@ aws/
     ├── 04-dynamodb-design.md     ★ §4 DynamoDB 설계 (이준혁)
     ├── 06-cost-estimate.md       ★ §6 비용 추정 (이준혁)
     ├── spec-ingestion-iot.md       📋 정일혁 명세 (§2.1, §6)
-    ├── spec-processing-lambda.md   📋 임형택 명세 (§2.2, §3, §5.1, §6)
+    ├── spec-processing-lambda.md   ★ 임형택 명세+구현 (§2.2, §3, §5.1, §6)
     └── spec-frontend-hosting.md    📋 노원우 명세 (§5.2, §6)
 ```
 ★ = 이준혁(본인) 구현 완료 · 📋 = 타 담당자 인수인계 명세
@@ -45,6 +48,21 @@ node sqlite-to-dynamodb.js --db ../../backend/data/sleep.db             # 실제
 1. **Storage (이준혁)** — 모두가 Import 하는 데이터 평면. 항상 선행.
 2. **Ingestion (정일혁) / Processing (임형택)** — 병렬. Storage Export 를 Import.
 3. **Frontend (노원우)** — Processing 의 API 도메인으로 빌드/배포.
+
+## 빠른 시작 (임형택 파트)
+
+```bash
+# 1) Storage 스택 선행 배포 후
+cd aws
+sam build -t layers/processing.yaml
+sam deploy --config-env processing \
+  --parameter-overrides FitbitClientId=<id> FitbitClientSecret=<secret> IotDataEndpoint=<ats-endpoint>
+
+# 2) Fitbit 토큰 Secrets 이전 (sleep.db 보유 시)
+cd migration
+node sqlite-to-secrets.js --db ../../backend/data/sleep.db --dry-run
+node sqlite-to-secrets.js --db ../../backend/data/sleep.db
+```
 
 자세한 의존성·교차 참조·보고서와 코드 차이는 **[HANDOVER-cloud.md](HANDOVER-cloud.md)** 참조.
 

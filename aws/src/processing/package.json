@@ -1,0 +1,16 @@
+{
+  "name": "smartsleep-processing",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Smart Sleep Lighting — Processing + Service-API Layer (담당: 임형택)",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.758.0",
+    "@aws-sdk/client-iot-data-plane": "^3.758.0",
+    "@aws-sdk/client-secrets-manager": "^3.758.0",
+    "@aws-sdk/lib-dynamodb": "^3.758.0"
+  }
+}

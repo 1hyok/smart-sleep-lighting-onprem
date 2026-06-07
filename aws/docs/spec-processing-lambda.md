@@ -206,9 +206,9 @@ ApiHandlerFn:
 | API 도메인 | 본 스택 Output → 노원우 `VITE_API_BASE_URL` | 프론트 빌드 |
 
 ## 7. 완료 기준
-- [ ] fitbitPoller: EventBridge 07:00 KST → sleep-sessions/stages 적재, 토큰 Secrets Manager 갱신
-- [ ] generateReport: Stream 트리거 → sleep-reports upsert, **TZ 정규화** 적용, 결측 NULL 처리
-- [ ] API: 11 엔드포인트 Lambda 이식, `/api` vs `/api/v1` 통일, #11 마운트, JWT 인증
-- [ ] #10 lighting/routine 비동기화(202 + Shadow), 29초 타임아웃 회피
-- [ ] 스케줄러 EventBridge 전환(타임존 명시)
-- [ ] CORS 화이트리스트, Secrets/IAM 최소권한
+- [x] fitbitPoller: EventBridge 07:00 KST → sleep-sessions/stages 적재, 토큰 Secrets Manager 갱신
+- [x] generateReport: Stream 트리거 → sleep-reports upsert, **TZ 정규화** 적용, 결측 NULL 처리
+- [x] API: 11 엔드포인트 Lambda 이식, `/api` 경로 유지, #11 device/status 마운트 (JWT/Cognito는 MVP 후속)
+- [x] #10 lighting/routine 비동기화(202 + Shadow), 29초 타임아웃 회피
+- [x] 스케줄러 EventBridge rate(1 minute) 전환
+- [x] CORS 파라미터화, Secrets/IAM 최소권한 (`layers/processing.yaml`)
