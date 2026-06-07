@@ -10,9 +10,12 @@ AWS 서버리스 구조로 옮기는 **AWS SAM** 프로젝트입니다. 4-Layer 
 aws/
 ├── template.yaml                 ★ Storage+Foundation 스택 (이준혁) — DynamoDB 10개 테이블
 ├── layers/processing.yaml        ★ Processing+API 스택 (임형택) — Lambda·API GW·EventBridge
+├── layers/ingestion.yaml         ★ Ingestion 스택 (정일혁) — IoT Rule 2개·IAM·CloudWatch
 ├── src/processing/               ★ Lambda 소스 (임형택)
+├── src/ingestion/                ★ 엣지 노드 + 디바이스 프로비저닝 (정일혁) — README 참조
 ├── samconfig.toml                  Storage SAM 배포 설정
 ├── samconfig-processing.toml       Processing SAM 배포 설정
+├── samconfig-ingestion.toml        Ingestion SAM 배포 설정
 ├── HANDOVER-cloud.md               통합 인수인계서 (배포 순서·의존성·소유권) ← 먼저 읽기
 ├── migration/
 │   ├── sqlite-to-dynamodb.js     ★ SQLite → DynamoDB 이전 (이준혁)
@@ -21,7 +24,7 @@ aws/
     ├── 01-architecture.md        ★ §1 4-Layer 아키텍처 (이준혁)
     ├── 04-dynamodb-design.md     ★ §4 DynamoDB 설계 (이준혁)
     ├── 06-cost-estimate.md       ★ §6 비용 추정 (이준혁)
-    ├── spec-ingestion-iot.md       📋 정일혁 명세 (§2.1, §6)
+    ├── spec-ingestion-iot.md       ★ 정일혁 명세+구현 (§2.1, §6)
     ├── spec-processing-lambda.md   ★ 임형택 명세+구현 (§2.2, §3, §5.1, §6)
     └── spec-frontend-hosting.md    📋 노원우 명세 (§5.2, §6)
 ```
@@ -63,6 +66,24 @@ cd migration
 node sqlite-to-secrets.js --db ../../backend/data/sleep.db --dry-run
 node sqlite-to-secrets.js --db ../../backend/data/sleep.db
 ```
+
+## 빠른 시작 (정일혁 파트 — Ingestion)
+
+```bash
+# 1) Storage 스택 선행 배포 후 — 디바이스 프로비저닝 (Thing/정책/인증서)
+cd aws/src/ingestion/provisioning
+./provision.sh                 # 멱등: 재실행해도 고아 인증서 안 쌓임
+
+# 2) IoT Rules + 모니터링 배포 (조도→DynamoDB, 상태→CloudWatch[+Lambda])
+cd ../../../                   # aws/
+sam deploy --config-env ingestion
+#   Rule B 를 임형택 DeviceStatus Lambda 로 연동 시 DeviceStatusFnArn 오버라이드
+
+# 3) 엣지 실행 (라즈베리파이 또는 PC dry-run)
+cd src/ingestion/edge && npm install
+MOCK_IOT=true MOCK_SENSOR=true npm start   # 인증서 없는 PC: dry-run 검증
+```
+상세: **[src/ingestion/README.md](src/ingestion/README.md)**
 
 자세한 의존성·교차 참조·보고서와 코드 차이는 **[HANDOVER-cloud.md](HANDOVER-cloud.md)** 참조.
 

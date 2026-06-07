@@ -6,3 +6,7 @@ node_modules/
 .DS_Store
 # SQLite DB 파일 (민감 데이터 + 대용량)
 backend/data/
+
+# IoT 디바이스 인증서/개인키 (절대 커밋 금지)
+certs/
+*.pem.key

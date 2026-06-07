@@ -1,0 +1,47 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ConnectAsOwnThing",
+      "Effect": "Allow",
+      "Action": "iot:Connect",
+      "Resource": "arn:aws:iot:__REGION__:__ACCOUNT__:client/${iot:Connection.Thing.ThingName}"
+    },
+    {
+      "Sid": "PublishOwnTelemetry",
+      "Effect": "Allow",
+      "Action": "iot:Publish",
+      "Resource": [
+        "arn:aws:iot:__REGION__:__ACCOUNT__:topic/home/sensor/illuminance",
+        "arn:aws:iot:__REGION__:__ACCOUNT__:topic/home/edge/status"
+      ]
+    },
+    {
+      "Sid": "PublishOwnShadow",
+      "Effect": "Allow",
+      "Action": "iot:Publish",
+      "Resource": [
+        "arn:aws:iot:__REGION__:__ACCOUNT__:topic/$aws/things/${iot:Connection.Thing.ThingName}/shadow/update",
+        "arn:aws:iot:__REGION__:__ACCOUNT__:topic/$aws/things/${iot:Connection.Thing.ThingName}/shadow/get"
+      ]
+    },
+    {
+      "Sid": "SubscribeOwnShadow",
+      "Effect": "Allow",
+      "Action": "iot:Subscribe",
+      "Resource": [
+        "arn:aws:iot:__REGION__:__ACCOUNT__:topicfilter/$aws/things/${iot:Connection.Thing.ThingName}/shadow/update/delta",
+        "arn:aws:iot:__REGION__:__ACCOUNT__:topicfilter/$aws/things/${iot:Connection.Thing.ThingName}/shadow/get/accepted"
+      ]
+    },
+    {
+      "Sid": "ReceiveOwnShadow",
+      "Effect": "Allow",
+      "Action": "iot:Receive",
+      "Resource": [
+        "arn:aws:iot:__REGION__:__ACCOUNT__:topic/$aws/things/${iot:Connection.Thing.ThingName}/shadow/update/delta",
+        "arn:aws:iot:__REGION__:__ACCOUNT__:topic/$aws/things/${iot:Connection.Thing.ThingName}/shadow/get/accepted"
+      ]
+    }
+  ]
+}

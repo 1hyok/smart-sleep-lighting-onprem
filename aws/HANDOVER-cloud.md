@@ -10,7 +10,7 @@
 | 레이어 | 담당 | 보고서 절 | 산출물 | 상태 |
 |---|---|---|---|---|
 | Storage + Foundation | **이준혁** | §1, §4, §6 | `template.yaml`, `migration/`, `docs/01·04·06` | ✅ 완료 |
-| Ingestion (IoT Core) | 정일혁 | §2.1, §6 | `layers/ingestion.yaml` + 엣지 코드 | 📋 `spec-ingestion-iot.md` |
+| Ingestion (IoT Core) | **정일혁** | §2.1, §6 | `layers/ingestion.yaml`, `src/ingestion/` (엣지 + 프로비저닝) | ✅ 구현 완료 |
 | Processing + Service-API | 임형택 | §2.2, §3, §5.1, §6 | `layers/processing.yaml`, `src/processing/`, `samconfig-processing.toml` | ✅ 구현 완료 |
 | Service-Frontend | 노원우 | §5.2, §6 | `layers/frontend.yaml` + `frontend/.env.production` | 📋 `spec-frontend-hosting.md` |
 
@@ -77,7 +77,7 @@
 | 3 | endpoints 에 users/settings·recommendations·feedback | 코드에 없음 | 임형택 — 후속 과제로 분류 |
 | 4 | 프론트 axios+withCredentials+HttpOnly쿠키 | `fetch`, 자격증명 없음 | 노원우 — 인증 도입 시 client.js+CORS |
 | 5 | 결측치 MCAR 선형보간 | 보간 없음(NULL) | 임형택 — 코드 유지 권장 or 신규 구현 |
-| 6 | 토픽 `iot/<thing>/illuminance` | `home/sensor/illuminance` | 정일혁 — 전환 시 3자 동기 |
+| 6 | 토픽 `iot/<thing>/illuminance` | `home/sensor/illuminance` | 정일혁 — ✅ `home/sensor/illuminance` 유지로 확정(엣지/IoT Rule/백엔드 계약 일치). 다중 디바이스 격리는 후속 |
 | 7 | `GET /api/device/status` 정상 | 미마운트(404) | 임형택 — 마운트 or Shadow 재구현 |
 | + | `lighting/routine` 동기 | 15~30분 인라인 await(API GW 29s 초과) | 임형택 — 202+Shadow 비동기화 |
 | + | report TZ | Fitbit 로컬 vs UTC 비교 버그 | 임형택 — UTC 정규화 |

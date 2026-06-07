@@ -1,0 +1,21 @@
+{
+  "name": "smart-sleep-lighting-edge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "프로젝트 6 — 라즈베리파이 엣지 노드: 조도 센서 → AWS IoT Core(X.509 mTLS) 발행 + Device Shadow 조명 명령 실행. 담당: 정일혁",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "mqtt": "^5.5.0"
+  },
+  "optionalDependencies": {
+    "i2c-bus": "^5.2.3",
+    "pigpio": "^3.3.1"
+  }
+}
