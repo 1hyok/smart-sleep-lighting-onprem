@@ -9,11 +9,14 @@ name: Deploy Frontend (S3 + CloudFront)
 #   CF_DISTRIBUTION_ID   frontend.yaml Output DistributionId
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'frontend/**'
-      - '.github/workflows/frontend-deploy.yml'
+  # 자동 배포 비활성화: AWS 미연결 상태에서 main push 때마다 자격증명 실패로
+  # 빨간불이 뜨는 것을 막는다. 실제 배포할 때만 Actions 탭 > "Run workflow" 로 수동 실행.
+  # (자동 배포 복구: 아래 push 블록 주석 해제 + GitHub Secrets 4종 등록)
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'frontend/**'
+  #     - '.github/workflows/frontend-deploy.yml'
   workflow_dispatch:
 
 permissions:
