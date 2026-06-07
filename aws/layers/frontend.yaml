@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Service-Frontend Layer (담당: 노원우)
+#  보고서 §5.2(S3+CloudFront 호스팅 · OAC · 캐시 · CORS) · §6(통신보안 · 보안헤더)
+#  명세: aws/docs/spec-frontend-hosting.md
+#
+#  구성 결정:
+#   - API 연결 = "분리 도메인": CloudFront 는 정적 자산(dist/)만 서빙하고,
+#     프론트엔드는 API Gateway URL(processing 스택의 ApiUrl)로 직접 호출한다.
+#     processing 의 API Gateway 가 CORS(CorsAllowOrigin)를 이미 처리하므로 추가 설정 불요.
+#     → 이 스택은 다른 스택을 ImportValue 하지 않아 독립적으로 배포 가능.
+#   - 도메인 = CloudFront 기본 도메인(*.cloudfront.net) + 기본 인증서.
+#     커스텀 도메인/ACM 미사용(학기 프로젝트). 전환 시 ViewerCertificate 주석 참조.
+#
+#  순수 CloudFormation 리소스만 사용 → SAM Transform 불요, sam build 불필요.
+#  검증:  cd aws && sam validate --lint -t layers/frontend.yaml
+#  배포:  cd aws && sam deploy --config-env frontend
+#  배포 후: 빌드 산출물 업로드 + 무효화는 CI(.github/workflows/frontend-deploy.yml) 또는 수동.
+# ──────────────────────────────────────────────────────────────────────────────
+
+Description: >
+  Smart Sleep Lighting — Service-Frontend Layer.
+  S3(비공개) + CloudFront(OAC) 정적 SPA 호스팅. SPA 딥링크 fallback · 보안헤더 · HTTPS 강제.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: smartsleep
+    AllowedPattern: '^[a-z][a-z0-9-]{1,20}$'
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+
+Resources:
+
+  # ── S3 origin (완전 비공개) — 보고서 §5.2.2 ──────────────────────────────────
+  # Public Access Block 4종 전부 활성. 웹사이트 호스팅 비활성(REST origin + OAC 사용).
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${Environment}-frontend-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: Layer, Value: frontend }
+        - { Key: Owner, Value: nowonwoo }
+
+  # ── OAC: 이 CloudFront 배포만 SigV4 서명으로 S3 접근 — 보고서 §5.2.2 ──────────
+  # OAI 대신 OAC: 전 리전/SigV4, SSE 객체 접근, 동적 메서드 확장 우위.
+  OAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${ProjectName}-${Environment}-oac'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ── 보안헤더 정책 — 보고서 §6 (노원우) ──────────────────────────────────────
+  SecurityHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub '${ProjectName}-${Environment}-security-headers'
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 63072000       # 2년. HSTS preload 요건
+            IncludeSubdomains: true
+            Preload: true
+            Override: true
+          ContentTypeOptions:                       # X-Content-Type-Options: nosniff
+            Override: true
+          FrameOptions:                             # X-Frame-Options: DENY (클릭재킹 차단)
+            FrameOption: DENY
+            Override: true
+          ReferrerPolicy:                           # Referrer 유출 최소화
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+
+  # ── CloudFront 배포 — 보고서 §5.2.1 · §5.2.5 · §6 ───────────────────────────
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub '${ProjectName}-${Environment} frontend SPA'
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2and3                      # HTTP/2·HTTP/3
+        IPV6Enabled: true
+        PriceClass: PriceClass_200                  # 아시아 포함, 전 엣지 대비 비용 절감
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt OAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''              # OAC 사용 시 OAI 는 빈 문자열
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https   # §6 HTTP → HTTPS 강제
+          Compress: true                            # gzip / Brotli 자동
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # AWS 관리형 CachingOptimized
+          ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+        # SPA 딥링크(BrowserRouter): /settings 등 새로고침 시 S3 가 403/404 → index.html 200
+        # 으로 되돌려 클라이언트 라우터가 처리하게 한다. 보고서 §5.2.2 / spec §2.
+        CustomErrorResponses:
+          - { ErrorCode: 403, ResponseCode: 200, ResponsePagePath: /index.html, ErrorCachingMinTTL: 0 }
+          - { ErrorCode: 404, ResponseCode: 200, ResponsePagePath: /index.html, ErrorCachingMinTTL: 0 }
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true        # *.cloudfront.net 기본 인증서(자동 HTTPS)
+          # ── 커스텀 도메인 전환 시 위 한 줄을 아래로 교체 ──
+          # AcmCertificateArn: <us-east-1 ACM ARN>
+          # SslSupportMethod: sni-only
+          # MinimumProtocolVersion: TLSv1.2_2021    # POODLE/BEAST 등 구버전 차단
+          # (그리고 DistributionConfig 에 Aliases: [<도메인>] 추가)
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: Layer, Value: frontend }
+        - { Key: Owner, Value: nowonwoo }
+
+  # ── 버킷 정책: 이 배포(OAC)만 GetObject 허용 — 보고서 §5.2.2 ─────────────────
+  # SourceArn 으로 이 배포 외(타 CloudFront)의 접근까지 차단.
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOACRead
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub '${SiteBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+
+Outputs:
+  SiteBucketName:
+    Description: CI 의 'aws s3 sync' 대상 버킷 (GitHub Secret SITE_BUCKET)
+    Value: !Ref SiteBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-SiteBucketName'
+
+  DistributionId:
+    Description: CI 의 CloudFront 무효화 대상 ID (GitHub Secret CF_DISTRIBUTION_ID)
+    Value: !Ref Distribution
+    Export:
+      Name: !Sub '${AWS::StackName}-DistributionId'
+
+  SiteUrl:
+    Description: 프론트엔드 접속 URL (CloudFront 기본 도메인)
+    Value: !Sub 'https://${Distribution.DomainName}'
+    Export:
+      Name: !Sub '${AWS::StackName}-SiteUrl'
