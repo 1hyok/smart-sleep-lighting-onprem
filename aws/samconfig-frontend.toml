@@ -1,0 +1,30 @@
+# SAM 배포 설정 — Service-Frontend Layer (담당: 노원우)
+# 사용: cd aws && sam deploy --config-env frontend
+#   - Serverless 함수가 없어 sam build 불필요 (순수 CloudFormation 템플릿).
+#   - 이 스택은 다른 스택을 Import 하지 않아 단독 배포 가능.
+version = 0.1
+
+[frontend.global.parameters]
+stack_name = "smartsleep-frontend"
+
+[frontend.validate.parameters]
+lint = true
+
+[frontend.deploy.parameters]
+stack_name = "smartsleep-frontend"
+resolve_s3 = true
+s3_prefix = "smartsleep-frontend"
+region = "ap-northeast-2"
+confirm_changeset = true
+template_file = "layers/frontend.yaml"
+parameter_overrides = "ProjectName=smartsleep Environment=dev"
+tags = "Project=smartsleep Layer=frontend Owner=nowonwoo"
+
+[frontend-prod.deploy.parameters]
+stack_name = "smartsleep-frontend-prod"
+resolve_s3 = true
+region = "ap-northeast-2"
+confirm_changeset = true
+template_file = "layers/frontend.yaml"
+parameter_overrides = "ProjectName=smartsleep Environment=prod"
+tags = "Project=smartsleep Layer=frontend Owner=nowonwoo"

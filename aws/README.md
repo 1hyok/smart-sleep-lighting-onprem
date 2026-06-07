@@ -11,11 +11,13 @@ aws/
 ├── template.yaml                 ★ Storage+Foundation 스택 (이준혁) — DynamoDB 10개 테이블
 ├── layers/processing.yaml        ★ Processing+API 스택 (임형택) — Lambda·API GW·EventBridge
 ├── layers/ingestion.yaml         ★ Ingestion 스택 (정일혁) — IoT Rule 2개·IAM·CloudWatch
+├── layers/frontend.yaml          ★ Frontend 스택 (노원우) — S3+CloudFront·OAC·보안헤더·HTTPS
 ├── src/processing/               ★ Lambda 소스 (임형택)
 ├── src/ingestion/                ★ 엣지 노드 + 디바이스 프로비저닝 (정일혁) — README 참조
 ├── samconfig.toml                  Storage SAM 배포 설정
 ├── samconfig-processing.toml       Processing SAM 배포 설정
 ├── samconfig-ingestion.toml        Ingestion SAM 배포 설정
+├── samconfig-frontend.toml         Frontend SAM 배포 설정
 ├── HANDOVER-cloud.md               통합 인수인계서 (배포 순서·의존성·소유권) ← 먼저 읽기
 ├── migration/
 │   ├── sqlite-to-dynamodb.js     ★ SQLite → DynamoDB 이전 (이준혁)
@@ -84,6 +86,30 @@ cd src/ingestion/edge && npm install
 MOCK_IOT=true MOCK_SENSOR=true npm start   # 인증서 없는 PC: dry-run 검증
 ```
 상세: **[src/ingestion/README.md](src/ingestion/README.md)**
+
+## 빠른 시작 (노원우 파트 — Frontend)
+
+```bash
+# (0) 선행: Processing 스택 배포 후 ApiUrl 확인 (분리 도메인 방식)
+aws cloudformation list-exports \
+  --query "Exports[?Name=='smartsleep-processing-ApiUrl'].Value" --output text
+
+# (1) 호스팅 스택 배포 (S3 비공개 + CloudFront OAC)
+cd aws
+sam validate --lint -t layers/frontend.yaml
+sam deploy --config-env frontend
+#   → Output: SiteBucketName / DistributionId / SiteUrl
+
+# (2) 빌드 + 업로드 + 무효화 (평소엔 .github/workflows/frontend-deploy.yml 이 자동화)
+cd ../frontend
+VITE_API_BASE_URL=<ApiUrl> npm run build
+aws s3 sync dist s3://<SiteBucketName> --delete \
+  --cache-control "public,max-age=31536000,immutable" --exclude index.html
+aws s3 cp dist/index.html s3://<SiteBucketName>/index.html \
+  --cache-control "no-cache,must-revalidate"
+aws cloudfront create-invalidation --distribution-id <DistributionId> --paths /index.html
+```
+상세: **[docs/spec-frontend-hosting.md](docs/spec-frontend-hosting.md)**
 
 자세한 의존성·교차 참조·보고서와 코드 차이는 **[HANDOVER-cloud.md](HANDOVER-cloud.md)** 참조.
 

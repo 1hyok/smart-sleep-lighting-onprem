@@ -12,7 +12,7 @@
 | Storage + Foundation | **이준혁** | §1, §4, §6 | `template.yaml`, `migration/`, `docs/01·04·06` | ✅ 완료 |
 | Ingestion (IoT Core) | **정일혁** | §2.1, §6 | `layers/ingestion.yaml`, `src/ingestion/` (엣지 + 프로비저닝) | ✅ 구현 완료 |
 | Processing + Service-API | 임형택 | §2.2, §3, §5.1, §6 | `layers/processing.yaml`, `src/processing/`, `samconfig-processing.toml` | ✅ 구현 완료 |
-| Service-Frontend | 노원우 | §5.2, §6 | `layers/frontend.yaml` + `frontend/.env.production` | 📋 `spec-frontend-hosting.md` |
+| Service-Frontend | 노원우 | §5.2, §6 | `layers/frontend.yaml`, `samconfig-frontend.toml`, `frontend/.env.production`, `.github/workflows/frontend-deploy.yml` | ✅ 구현 완료 |
 
 ## 2. 공통 규약 (모든 스택이 지킬 것)
 
