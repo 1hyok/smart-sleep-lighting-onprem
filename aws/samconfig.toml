@@ -1,0 +1,34 @@
+# SAM 배포 설정 — Storage & Foundation Stack (담당: 이준혁)
+# 사용: aws/ 디렉터리에서  sam build  &&  sam deploy
+# 최초 1회는 sam deploy --guided 로 S3 버킷/리전 확인 권장.
+version = 0.1
+
+[default.global.parameters]
+stack_name = "smartsleep-storage"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.validate.parameters]
+lint = true
+
+[default.deploy.parameters]
+stack_name = "smartsleep-storage"
+resolve_s3 = true
+s3_prefix = "smartsleep-storage"
+region = "ap-northeast-2"            # 설계 보고서 §6 기준 Seoul 리전
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "ProjectName=smartsleep Environment=dev IlluminanceTtlDays=30"
+tags = "Project=smartsleep Layer=storage Owner=leejunhyeok"
+
+# prod 스테이지 배포 예시:
+#   sam deploy --config-env prod
+[prod.deploy.parameters]
+stack_name = "smartsleep-storage-prod"
+resolve_s3 = true
+region = "ap-northeast-2"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "ProjectName=smartsleep Environment=prod IlluminanceTtlDays=30"

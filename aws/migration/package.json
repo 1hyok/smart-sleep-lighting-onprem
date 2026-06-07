@@ -1,0 +1,20 @@
+{
+  "name": "smartsleep-sqlite-to-dynamodb",
+  "version": "1.0.0",
+  "description": "On-prem SQLite(sleep.db, 9 tables) -> DynamoDB(10 tables) one-shot migration. 담당: 이준혁",
+  "private": true,
+  "type": "commonjs",
+  "main": "sqlite-to-dynamodb.js",
+  "scripts": {
+    "migrate": "node sqlite-to-dynamodb.js",
+    "migrate:dry": "node sqlite-to-dynamodb.js --dry-run"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.620.0",
+    "@aws-sdk/lib-dynamodb": "^3.620.0",
+    "sql.js": "^1.14.1"
+  }
+}

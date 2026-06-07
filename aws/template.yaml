@@ -1,0 +1,338 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Storage + Foundation Stack  (담당: 이준혁 — 아키텍처 / DBMS)
+#  설계 보고서 §1(4-Layer 아키텍처) · §4(DynamoDB 설계) · §4.5(운영 정책) 구현체
+#
+#  이 스택은 4-Layer 중 [Storage Layer]를 단독 배포 가능한 형태로 정의한다.
+#  Ingestion(정일혁) / Processing·Service-API(임형택) / Service-Frontend(노원우)
+#  스택은 이 스택의 Outputs(Export)를 Fn::ImportValue 로 참조한다.
+#  → 레이어별 소유권/Import 규약: aws/docs/ 의 spec-*.md 참조.
+#
+#  배포:   sam deploy --guided      (samconfig.toml 에 기본값 존재)
+#  검증:   sam validate --lint
+# ──────────────────────────────────────────────────────────────────────────────
+
+Description: >
+  Smart Sleep Lighting — Storage & Foundation Layer (DynamoDB).
+  On-prem SQLite(9 tables) → DynamoDB(10 tables) migration target.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: smartsleep
+    Description: 리소스 이름 접두사 (모든 테이블명 = ${ProjectName}-${Environment}-<table>)
+    AllowedPattern: '^[a-z][a-z0-9-]{1,20}$'
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+    Description: 배포 스테이지. dev/prod 분리로 데이터·권한 격리.
+  IlluminanceTtlDays:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 365
+    Description: illuminance-readings 핫 테이블 보존 기간(일). TTL 자동 삭제 기준(문서화용, 실제 만료는 항목의 ttl 속성으로 결정).
+
+# 설계 보고서 §4.5 운영 정책 매핑
+#  - On-Demand 용량 모드      → 모든 테이블 BillingMode: PAY_PER_REQUEST
+#  - PITR (35일 복원)         → sleep-sessions / sleep-reports / schedules
+#  - KMS(AWS Owned Key) 암호화 → SSESpecification 미지정 = AWS Owned Key(무료) 기본 적용
+#  - DynamoDB Streams         → sleep-sessions 만 활성 (generateReportLambda 트리거)
+#  - TTL 자연 삭제            → illuminance-readings (PITR 미적용으로 비용 절감)
+Resources:
+
+  # ── §4.3.1 users ───────────────────────────────────────────────────────────
+  #  PK=user_id(UUID). GSI fitbit-user-index 로 Fitbit encodedId → user_id 역조회.
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-users'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: user_id, AttributeType: S }
+        - { AttributeName: fitbit_user_id, AttributeType: S }
+      KeySchema:
+        - { AttributeName: user_id, KeyType: HASH }
+      GlobalSecondaryIndexes:
+        - IndexName: fitbit-user-index
+          KeySchema:
+            - { AttributeName: fitbit_user_id, KeyType: HASH }
+          Projection: { ProjectionType: ALL }
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: Layer, Value: storage }
+        - { Key: Owner, Value: leejunhyeok }
+
+  # ── §4.3.2 fitbit-tokens-meta ────────────────────────────────────────────────
+  #  토큰 본문은 Secrets Manager(임형택). 여기엔 메타데이터(만료/scope/ARN)만.
+  FitbitTokensMetaTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-fitbit-tokens-meta'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: user_id, AttributeType: S }
+      KeySchema:
+        - { AttributeName: user_id, KeyType: HASH }
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: Layer, Value: storage }
+
+  # ── §4.3.3 sleep-sessions ────────────────────────────────────────────────────
+  #  PK=user_id, SK="<date>#<fitbit_log_id>". 최근 N일 = Query + begins_with(date).
+  #  Streams(NEW_AND_OLD_IMAGES) → generateReportLambda(임형택) 비동기 트리거.
+  #  PITR 활성 (35일 복원).
+  SleepSessionsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-sleep-sessions'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: user_id, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: user_id, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: Layer, Value: storage }
+
+  # ── §4.3.3 sleep-stages ──────────────────────────────────────────────────────
+  #  PK=session_id (= 부모 세션의 fitbit_log_id), SK=stage(wake|light|deep|rem).
+  SleepStagesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-sleep-stages'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: session_id, AttributeType: S }
+        - { AttributeName: stage, AttributeType: S }
+      KeySchema:
+        - { AttributeName: session_id, KeyType: HASH }
+        - { AttributeName: stage, KeyType: RANGE }
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: Layer, Value: storage }
+
+  # ── §4.3.3 sleep-reports ─────────────────────────────────────────────────────
+  #  PK=user_id, SK=report_date. GET /api/v1/reports/daily 의 주 응답 소스.
+  #  sleep_session_snapshot 으로 세션·단계 통계 비정규화(JOIN 제거). PITR 활성.
+  SleepReportsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-sleep-reports'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: user_id, AttributeType: S }
+        - { AttributeName: report_date, AttributeType: S }
+      KeySchema:
+        - { AttributeName: user_id, KeyType: HASH }
+        - { AttributeName: report_date, KeyType: RANGE }
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: Layer, Value: storage }
+
+  # ── §4.3.4 lighting-routines ─────────────────────────────────────────────────
+  #  PK=routine_id(UUID v7, 시각 순서 보존). GSI by-user-date 로 사용자·일자 조회.
+  LightingRoutinesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-lighting-routines'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: routine_id, AttributeType: S }
+        - { AttributeName: user_id, AttributeType: S }
+        - { AttributeName: scheduled_at, AttributeType: S }
+      KeySchema:
+        - { AttributeName: routine_id, KeyType: HASH }
+      GlobalSecondaryIndexes:
+        - IndexName: by-user-date
+          KeySchema:
+            - { AttributeName: user_id, KeyType: HASH }
+            - { AttributeName: scheduled_at, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: Layer, Value: storage }
+
+  # ── §4.3.4 routine-steps ─────────────────────────────────────────────────────
+  #  PK=routine_id, SK=step_index(Number). 루틴 1건당 4~5단계 단일 Query.
+  RoutineStepsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-routine-steps'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: routine_id, AttributeType: S }
+        - { AttributeName: step_index, AttributeType: N }
+      KeySchema:
+        - { AttributeName: routine_id, KeyType: HASH }
+        - { AttributeName: step_index, KeyType: RANGE }
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: Layer, Value: storage }
+
+  # ── §4.3.4 schedules ─────────────────────────────────────────────────────────
+  #  PK=user_id 단일 항목(MVP: 사용자당 1 스케줄). PITR 활성. PutItem 으로 갱신.
+  SchedulesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-schedules'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: user_id, AttributeType: S }
+      KeySchema:
+        - { AttributeName: user_id, KeyType: HASH }
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: Layer, Value: storage }
+
+  # ── §4.4 illuminance-readings (시계열 핫 테이블) ──────────────────────────────
+  #  PK=device_id, SK=recorded_at(ISO 8601). TTL 30일 자연 삭제(속성명: ttl, epoch s).
+  #  PITR 미적용(TTL 삭제 데이터라 복원 가치 낮음 → 비용 절감, §4.5).
+  #  IoT Rule(정일혁)이 직접 PutItem 하므로 Outputs 의 ARN 을 Import 한다.
+  IlluminanceReadingsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-illuminance-readings'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: device_id, AttributeType: S }
+        - { AttributeName: recorded_at, AttributeType: S }
+      KeySchema:
+        - { AttributeName: device_id, KeyType: HASH }
+        - { AttributeName: recorded_at, KeyType: RANGE }
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: Layer, Value: storage }
+        - { Key: RetentionDays, Value: !Ref IlluminanceTtlDays }
+
+  # ── §4.4 illuminance-latest (최신값 캐시) ─────────────────────────────────────
+  #  PK=device_id 단일 항목(덮어쓰기). GET /api/v1/illuminance-readings(current) 1 GetItem.
+  IlluminanceLatestTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Sub '${ProjectName}-${Environment}-illuminance-latest'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: device_id, AttributeType: S }
+      KeySchema:
+        - { AttributeName: device_id, KeyType: HASH }
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: Layer, Value: storage }
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Outputs (Cross-stack Exports)
+#  다른 레이어 스택은 Fn::ImportValue: !Sub '${StorageStackName}-<Key>' 로 참조.
+#  예) 임형택 Lambda: TableName 환경변수 = !ImportValue 'smartsleep-storage-SleepSessionsTableName'
+# ──────────────────────────────────────────────────────────────────────────────
+Outputs:
+  UsersTableName:
+    Value: !Ref UsersTable
+    Export: { Name: !Sub '${AWS::StackName}-UsersTableName' }
+  UsersTableArn:
+    Value: !GetAtt UsersTable.Arn
+    Export: { Name: !Sub '${AWS::StackName}-UsersTableArn' }
+
+  FitbitTokensMetaTableName:
+    Value: !Ref FitbitTokensMetaTable
+    Export: { Name: !Sub '${AWS::StackName}-FitbitTokensMetaTableName' }
+  FitbitTokensMetaTableArn:
+    Value: !GetAtt FitbitTokensMetaTable.Arn
+    Export: { Name: !Sub '${AWS::StackName}-FitbitTokensMetaTableArn' }
+
+  SleepSessionsTableName:
+    Value: !Ref SleepSessionsTable
+    Export: { Name: !Sub '${AWS::StackName}-SleepSessionsTableName' }
+  SleepSessionsTableArn:
+    Value: !GetAtt SleepSessionsTable.Arn
+    Export: { Name: !Sub '${AWS::StackName}-SleepSessionsTableArn' }
+  SleepSessionsStreamArn:
+    Description: generateReportLambda(임형택) EventSourceMapping 가 구독할 Stream ARN
+    Value: !GetAtt SleepSessionsTable.StreamArn
+    Export: { Name: !Sub '${AWS::StackName}-SleepSessionsStreamArn' }
+
+  SleepStagesTableName:
+    Value: !Ref SleepStagesTable
+    Export: { Name: !Sub '${AWS::StackName}-SleepStagesTableName' }
+  SleepStagesTableArn:
+    Value: !GetAtt SleepStagesTable.Arn
+    Export: { Name: !Sub '${AWS::StackName}-SleepStagesTableArn' }
+
+  SleepReportsTableName:
+    Value: !Ref SleepReportsTable
+    Export: { Name: !Sub '${AWS::StackName}-SleepReportsTableName' }
+  SleepReportsTableArn:
+    Value: !GetAtt SleepReportsTable.Arn
+    Export: { Name: !Sub '${AWS::StackName}-SleepReportsTableArn' }
+
+  LightingRoutinesTableName:
+    Value: !Ref LightingRoutinesTable
+    Export: { Name: !Sub '${AWS::StackName}-LightingRoutinesTableName' }
+  LightingRoutinesTableArn:
+    Value: !GetAtt LightingRoutinesTable.Arn
+    Export: { Name: !Sub '${AWS::StackName}-LightingRoutinesTableArn' }
+
+  RoutineStepsTableName:
+    Value: !Ref RoutineStepsTable
+    Export: { Name: !Sub '${AWS::StackName}-RoutineStepsTableName' }
+  RoutineStepsTableArn:
+    Value: !GetAtt RoutineStepsTable.Arn
+    Export: { Name: !Sub '${AWS::StackName}-RoutineStepsTableArn' }
+
+  SchedulesTableName:
+    Value: !Ref SchedulesTable
+    Export: { Name: !Sub '${AWS::StackName}-SchedulesTableName' }
+  SchedulesTableArn:
+    Value: !GetAtt SchedulesTable.Arn
+    Export: { Name: !Sub '${AWS::StackName}-SchedulesTableArn' }
+
+  IlluminanceReadingsTableName:
+    Value: !Ref IlluminanceReadingsTable
+    Export: { Name: !Sub '${AWS::StackName}-IlluminanceReadingsTableName' }
+  IlluminanceReadingsTableArn:
+    Description: IoT Rule(정일혁) DynamoDBv2 액션이 PutItem 할 대상 ARN
+    Value: !GetAtt IlluminanceReadingsTable.Arn
+    Export: { Name: !Sub '${AWS::StackName}-IlluminanceReadingsTableArn' }
+
+  IlluminanceLatestTableName:
+    Value: !Ref IlluminanceLatestTable
+    Export: { Name: !Sub '${AWS::StackName}-IlluminanceLatestTableName' }
+  IlluminanceLatestTableArn:
+    Value: !GetAtt IlluminanceLatestTable.Arn
+    Export: { Name: !Sub '${AWS::StackName}-IlluminanceLatestTableArn' }
