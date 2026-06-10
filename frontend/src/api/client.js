@@ -1,3 +1,5 @@
+import { mockRequest, USE_MOCK } from "./mock";
+
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
 
 class ApiError extends Error {
@@ -10,6 +12,9 @@ class ApiError extends Error {
 }
 
 async function request(path, { method = "GET", body, signal } = {}) {
+  // 데모/스크린샷 모드: 백엔드 없이 가짜 데이터로 모든 화면을 채운다.
+  if (USE_MOCK) return mockRequest(path, { method, body });
+
   const url = `${BASE_URL}${path}`;
   const init = { method, signal, headers: {} };
 
