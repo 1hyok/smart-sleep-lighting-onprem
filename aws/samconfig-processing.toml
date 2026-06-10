@@ -1,5 +1,5 @@
 # SAM 배포 설정 — Processing + Service-API Layer (담당: 임형택)
-# 사용: cd aws && sam build -t layers/processing.yaml && sam deploy --config-env processing
+# 사용: cd aws && sam build -t layers/processing.yaml && sam deploy --config-file samconfig-processing.toml --config-env processing
 version = 0.1
 
 [processing.global.parameters]

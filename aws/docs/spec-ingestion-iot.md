@@ -183,7 +183,7 @@ StatusRule:
 **산출물**
 - `aws/layers/ingestion.yaml` — IoT Rule A(조도→DynamoDB 이중 적재, `WHERE source='sensor'`),
   Rule B(상태→DeviceStatus Lambda[선택]+CloudWatch), 최소권한 IAM 2종, 로그 그룹 2종, Storage Export Import.
-- `aws/samconfig-ingestion.toml` — `sam deploy --config-env ingestion`.
+- `aws/samconfig-ingestion.toml` — `sam deploy --config-file samconfig-ingestion.toml --config-env ingestion`.
 - `aws/src/ingestion/edge/` — 엣지 노드(mTLS 발행·LWT·지수백오프·Shadow·GPIO actuation·dry-run 폴백).
 - `aws/src/ingestion/provisioning/` — 최소권한 IoT Policy + 멱등 프로비저닝/정리 스크립트.
 

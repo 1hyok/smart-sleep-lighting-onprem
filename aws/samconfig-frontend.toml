@@ -1,5 +1,5 @@
 # SAM 배포 설정 — Service-Frontend Layer (담당: 노원우)
-# 사용: cd aws && sam deploy --config-env frontend
+# 사용: cd aws && sam deploy --config-file samconfig-frontend.toml --config-env frontend
 #   - Serverless 함수가 없어 sam build 불필요 (순수 CloudFormation 템플릿).
 #   - 이 스택은 다른 스택을 Import 하지 않아 단독 배포 가능.
 version = 0.1
