@@ -1,5 +1,5 @@
 # SAM 배포 설정 — Ingestion Layer (담당: 정일혁)
-# 사용: cd aws && sam deploy --config-env ingestion
+# 사용: cd aws && sam deploy --config-file samconfig-ingestion.toml --config-env ingestion
 # 선행: smartsleep-storage 스택 배포(illuminance 테이블 Export 필요)
 # 선택: DeviceStatusFnArn 에 Processing 스택의 DeviceStatus Lambda ARN 지정 시
 #       home/edge/status 가 그 Lambda 로도 라우팅됨(미지정 시 CloudWatch 로깅만).

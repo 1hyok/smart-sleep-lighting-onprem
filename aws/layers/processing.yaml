@@ -42,7 +42,7 @@ Parameters:
   IotDataEndpoint:
     Type: String
     Default: ''
-    Description: AWS IoT Data-ATS 엔드포인트 (예: xxxxx-ats.iot.ap-northeast-2.amazonaws.com). 비우면 Shadow 스킵.
+    Description: 'AWS IoT Data-ATS 엔드포인트 (예: xxxxx-ats.iot.ap-northeast-2.amazonaws.com). 비우면 Shadow 스킵.'
   FitbitClientId:
     Type: String
     Default: ''
@@ -56,11 +56,10 @@ Conditions:
   HasFitbitCredentials: !And
     - !Not [!Equals [!Ref FitbitClientId, '']]
     - !Not [!Equals [!Ref FitbitClientSecret, '']]
-  HasIotEndpoint: !Not [!Equals [!Ref IotDataEndpoint, '']]
 
 Globals:
   Function:
-    Runtime: nodejs20.x
+    Runtime: nodejs22.x
     Architectures: [x86_64]
     Timeout: 30
     MemorySize: 256
@@ -184,6 +183,12 @@ Resources:
         - DynamoDBStreamReadPolicy:
             TableName: !ImportValue
               Fn::Sub: '${StorageStackName}-SleepSessionsTableName'
+            StreamName: !Select
+              - 3
+              - !Split
+                - '/'
+                - !ImportValue
+                    Fn::Sub: '${StorageStackName}-SleepSessionsStreamArn'
       Events:
         SessionStream:
           Type: DynamoDB

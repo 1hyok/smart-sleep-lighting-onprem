@@ -73,14 +73,14 @@
 | # | 보고서 | 코드 | 담당/조치 |
 |---|---|---|---|
 | 1 | DynamoDB 6개 | 실제 **10개** | 이준혁 — 10개로 확정(완료) |
-| 2 | `/api/v1/...` | `/api/...` | 임형택·노원우 — 버저닝 통일 |
+| 2 | `/api/v1/...` | `/api/...` | 임형택·노원우 — ✅ `/api/...` 로 통일 확정(백엔드 11개 라우트·프론트 api 5개 모듈 전수 대조 일치, 2026-06-10) |
 | 3 | endpoints 에 users/settings·recommendations·feedback | 코드에 없음 | 임형택 — 후속 과제로 분류 |
 | 4 | 프론트 axios+withCredentials+HttpOnly쿠키 | `fetch`, 자격증명 없음 | 노원우 — 인증 도입 시 client.js+CORS |
 | 5 | 결측치 MCAR 선형보간 | 보간 없음(NULL) | 임형택 — 코드 유지 권장 or 신규 구현 |
 | 6 | 토픽 `iot/<thing>/illuminance` | `home/sensor/illuminance` | 정일혁 — ✅ `home/sensor/illuminance` 유지로 확정(엣지/IoT Rule/백엔드 계약 일치). 다중 디바이스 격리는 후속 |
-| 7 | `GET /api/device/status` 정상 | 미마운트(404) | 임형택 — 마운트 or Shadow 재구현 |
-| + | `lighting/routine` 동기 | 15~30분 인라인 await(API GW 29s 초과) | 임형택 — 202+Shadow 비동기화 |
-| + | report TZ | Fitbit 로컬 vs UTC 비교 버그 | 임형택 — UTC 정규화 |
+| 7 | `GET /api/device/status` 정상 | 미마운트(404) | 임형택 — ✅ 해결(apiHandler.js ROUTES 마운트 + device-status 테이블 scan 반환 확인) |
+| + | `lighting/routine` 동기 | 15~30분 인라인 await(API GW 29s 초과) | 임형택 — ✅ 해결(202 Accepted + Device Shadow desired 위임, lib/routines.js) |
+| + | report TZ | Fitbit 로컬 vs UTC 비교 버그 | 임형택 — ✅ 해결(lib/tz.js fitbitLocalToUtc UTC 정규화). 잔여 한계: findRoutinesForDate 의 UTC 일 경계로 KST 야간 루틴 매칭이 빗나갈 수 있음(리포트 보조 불리언 필드 한정) |
 
 ## 6. 온프레미스 → AWS 컴포넌트 대응 (전체)
 

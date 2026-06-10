@@ -22,7 +22,7 @@ Parameters:
   ProjectName:
     Type: String
     Default: smartsleep
-    Description: 리소스 이름 접두사 (모든 테이블명 = ${ProjectName}-${Environment}-<table>)
+    Description: 리소스 이름 접두사 (모든 테이블명 = <ProjectName>-<Environment>-<table>)
     AllowedPattern: '^[a-z][a-z0-9-]{1,20}$'
   Environment:
     Type: String

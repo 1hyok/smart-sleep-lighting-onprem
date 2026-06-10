@@ -60,7 +60,7 @@ node sqlite-to-dynamodb.js --db ../../backend/data/sleep.db             # 실제
 # 1) Storage 스택 선행 배포 후
 cd aws
 sam build -t layers/processing.yaml
-sam deploy --config-env processing \
+sam deploy --config-file samconfig-processing.toml --config-env processing \
   --parameter-overrides FitbitClientId=<id> FitbitClientSecret=<secret> IotDataEndpoint=<ats-endpoint>
 
 # 2) Fitbit 토큰 Secrets 이전 (sleep.db 보유 시)
@@ -78,7 +78,7 @@ cd aws/src/ingestion/provisioning
 
 # 2) IoT Rules + 모니터링 배포 (조도→DynamoDB, 상태→CloudWatch[+Lambda])
 cd ../../../                   # aws/
-sam deploy --config-env ingestion
+sam deploy --config-file samconfig-ingestion.toml --config-env ingestion
 #   Rule B 를 임형택 DeviceStatus Lambda 로 연동 시 DeviceStatusFnArn 오버라이드
 
 # 3) 엣지 실행 (라즈베리파이 또는 PC dry-run)
@@ -97,7 +97,7 @@ aws cloudformation list-exports \
 # (1) 호스팅 스택 배포 (S3 비공개 + CloudFront OAC)
 cd aws
 sam validate --lint -t layers/frontend.yaml
-sam deploy --config-env frontend
+sam deploy --config-file samconfig-frontend.toml --config-env frontend
 #   → Output: SiteBucketName / DistributionId / SiteUrl
 
 # (2) 빌드 + 업로드 + 무효화 (평소엔 .github/workflows/frontend-deploy.yml 이 자동화)
